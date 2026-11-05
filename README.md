@@ -19,6 +19,17 @@ uv run pytest
 
 すべて passed になれば準備完了です。
 
+## 素材から完成動画を作る（段階2・画面なし版）
+
+```
+uv run python -m app.pipeline.run "D:\素材" --model EPC01A-20BK --out store,youtube
+```
+
+- 完成動画とレポートは `projects/<日付>_<型番>/output/` にできます
+- 元の素材フォルダは変更しません（プロジェクトの「素材」にコピーして使います）
+- 主なオプション: `--strength weak|normal|strong`（無音カットの強さ）、`--level small|medium|large`（BGM 音量）、
+  `--fit pad|crop`（縦撮りを黒帯／切り抜き）、`--keep-all`（除外候補も使う）、`--target 150`（目標秒数）
+
 ## フォント
 
 `assets/fonts/` の6書体はすべて SIL Open Font License 1.1 で、同梱・商用利用が認められています。

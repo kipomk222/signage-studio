@@ -127,6 +127,28 @@ def pick_encoder(
     )
 
 
+# 書き出し方式ごとの画質設定。"work" は途中ファイル（画質優先）、"final" は完成動画。
+_ENCODER_ARGS: dict[str, dict[str, list[str]]] = {
+    "h264_videotoolbox": {
+        "work": ["-b:v", "20M"],
+        "final": ["-b:v", "12M", "-maxrate", "16M", "-bufsize", "24M"],
+    },
+    "h264_amf": {
+        "work": ["-rc", "cqp", "-qp_i", "16", "-qp_p", "18"],
+        "final": ["-rc", "vbr_peak", "-b:v", "12M", "-maxrate", "16M"],
+    },
+    "libx264": {
+        "work": ["-preset", "veryfast", "-crf", "16"],
+        "final": ["-preset", "veryfast", "-crf", "20"],
+    },
+}
+
+
+def video_encode_args(encoder: str, purpose: str) -> list[str]:
+    """FFmpeg に渡す映像の書き出し指定（-c:v から -pix_fmt まで）。"""
+    return ["-c:v", encoder, *_ENCODER_ARGS[encoder][purpose], "-pix_fmt", "yuv420p"]
+
+
 def open_folder_command(path: Path, os_kind: OSKind) -> list[str]:
     if os_kind is OSKind.MAC:
         return ["open", str(path)]
@@ -142,6 +164,9 @@ class PlatformProfile:
     ffmpeg: str
     ffprobe: str
     video_encoder: str
+
+    def video_args(self, purpose: str = "final") -> list[str]:
+        return video_encode_args(self.video_encoder, purpose)
 
     def open_folder(self, path: Path) -> None:
         """完成したフォルダを Finder / エクスプローラーで開く。"""
