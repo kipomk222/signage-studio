@@ -12,7 +12,7 @@ from app.claude.images import IMAGE_EXTS, prepare_images
 from app.claude.runner import ROOT, ClaudeCode, load_prompt
 from app.errors import UserError
 from app.claude.schemas import (
-    TELOP_MAX_CHARS, PlanOut, ProductInfo, TelopsOut, YoutubeOut,
+    TELOP_MAX_CHARS, TITLE_MAX_CHARS, PlanOut, ProductInfo, TelopsOut, YoutubeOut,
     check_product, check_youtube, tidy_pasted_sources, make_plan_check, make_telop_check, scenes_budget,
 )
 from app.project import Price, Product, Scene, Telop, safe_folder_part
@@ -135,14 +135,26 @@ def make_plan(cc: ClaudeCode, product: Product, target_seconds: int, price: Pric
 # --- テロップ -------------------------------------------------------------------
 
 def make_telops(cc: ClaudeCode, product: Product, scenes: list[Scene], transcript: list[dict],
-                duration: float, price: Price, extra_text: str = "") -> list[Telop]:
-    """transcript: [{"start": 秒, "end": 秒, "text": "..."}]（編集後の動画の時刻）"""
+                duration: float, price: Price, extra_text: str = "") -> tuple[str, list[Telop]]:
+    """冒頭タイトルと要点テロップを作る。
+
+    transcript: [{"start": 秒, "end": 秒, "text": "..."}]（編集後の動画の時刻）
+    """
     lines = "\n".join(f"{t['start']:.1f}-{t['end']:.1f}: {t['text']}" for t in transcript) or "（なし）"
     prompt = load_prompt("telop", product=product_text(product), script=scenes_text(scenes),
                          transcript=lines, duration=f"{duration:.1f}", price=price_text(price),
-                         extra=extra_text.strip() or "なし", max_chars=str(TELOP_MAX_CHARS))
-    out = cc.ask(prompt, TelopsOut, timeout=WRITE_TIMEOUT, check=make_telop_check(duration))
-    return [Telop(start=t.start, end=t.end, text=t.text) for t in sorted(out.telops, key=lambda t: t.start)]
+                         extra=extra_text.strip() or "なし", max_chars=str(TELOP_MAX_CHARS),
+                         title_max=str(TITLE_MAX_CHARS))
+    out = cc.ask(prompt, TelopsOut, timeout=WRITE_TIMEOUT, check=make_telop_check(duration, product.model_number))
+    telops = [Telop(start=t.start, end=t.end, text=t.text) for t in sorted(out.telops, key=lambda t: t.start)]
+    return out.title.strip(), telops
+
+
+def merge_manual(new: list[Telop], old: list[Telop]) -> list[Telop]:
+    """作り直したテロップに、手で直したテロップを残す（重なる自動テロップは外す）。"""
+    manual = [t for t in old if t.manual]
+    kept = [t for t in new if not any(t.start < m.end and m.start < t.end for m in manual)]
+    return sorted(kept + manual, key=lambda t: t.start)
 
 
 # --- YouTube 説明文 -------------------------------------------------------------

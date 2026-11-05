@@ -129,6 +129,7 @@ class Project(BaseModel):
     stage: Stage = Stage.PLAN
     stale: list[Stage] = Field(default_factory=list)  # 「再作成が必要」な段階
     product: Product
+    title: str = ""  # 冒頭タイトル
     plan: Plan = Field(default_factory=Plan)
     clips: list[Clip] = Field(default_factory=list)
     telops: list[Telop] = Field(default_factory=list)

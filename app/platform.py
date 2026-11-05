@@ -42,6 +42,13 @@ WHISPER_BACKEND: dict[OSKind, str] = {
     OSKind.LINUX: "faster-whisper",
 }
 
+# 文字起こしのモデル。初回だけダウンロードされ、以降は PC に保存したものを使う
+WHISPER_MODEL: dict[OSKind, str] = {
+    OSKind.MAC: "mlx-community/whisper-large-v3-turbo",
+    OSKind.WINDOWS: "large-v3-turbo",
+    OSKind.LINUX: "large-v3-turbo",
+}
+
 FFMPEG_INSTALL_HINT: dict[OSKind, str] = {
     OSKind.MAC: "ターミナルで「brew install ffmpeg」を実行してから、もう一度起動してください。",
     OSKind.WINDOWS: "コマンドプロンプトで「winget install ffmpeg」を実行してから、もう一度起動してください。",
@@ -149,6 +156,16 @@ def video_encode_args(encoder: str, purpose: str) -> list[str]:
     return ["-c:v", encoder, *_ENCODER_ARGS[encoder][purpose], "-pix_fmt", "yuv420p"]
 
 
+def ffmpeg_filter_path(path: Path) -> str:
+    """FFmpeg のフィルター（subtitles など）に渡すファイルの場所。
+
+    Windows の「C:\\」の「:」と「\\」はフィルターの区切り文字とぶつかるので書き換える。
+    """
+    text = Path(path).resolve().as_posix()
+    text = text.replace("\\", "/").replace(":", "\\:").replace("'", "'\\''")
+    return f"'{text}'"
+
+
 def open_folder_command(path: Path, os_kind: OSKind) -> list[str]:
     if os_kind is OSKind.MAC:
         return ["open", str(path)]
@@ -161,6 +178,7 @@ def open_folder_command(path: Path, os_kind: OSKind) -> list[str]:
 class PlatformProfile:
     os_kind: OSKind
     whisper_backend: str
+    whisper_model: str
     ffmpeg: str
     ffprobe: str
     video_encoder: str
@@ -185,6 +203,7 @@ def build_profile(
     return PlatformProfile(
         os_kind=os_kind,
         whisper_backend=WHISPER_BACKEND[os_kind],
+        whisper_model=WHISPER_MODEL[os_kind],
         ffmpeg=ffmpeg,
         ffprobe=ffprobe,
         video_encoder=encoder,

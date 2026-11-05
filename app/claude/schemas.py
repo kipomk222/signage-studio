@@ -103,18 +103,27 @@ class TelopOut(_Strict):
 
 
 class TelopsOut(_Strict):
+    title: str  # 冒頭タイトル（型番を含まない短い見出し）
     telops: list[TelopOut]
+
+
+TITLE_MAX_CHARS = 14
 
 
 def telop_length(text: str) -> int:
     return len(text.replace("\n", ""))
 
 
-def make_telop_check(duration: float):
+def make_telop_check(duration: float, model_number: str = ""):
     def check(t: TelopsOut) -> list[str]:
         problems = []
+        if not t.title.strip() or telop_length(t.title) > TITLE_MAX_CHARS:
+            problems.append(f"title は {TITLE_MAX_CHARS} 文字以内の見出しにしてください。")
+        squash = lambda x: x.replace("-", "").replace(" ", "").lower()  # noqa: E731
+        if model_number and squash(model_number) in squash(t.title):
+            problems.append(f"title には型番（{model_number}）を入れないでください。")
         if not t.telops:
-            return ["テロップを1つ以上作ってください。"]
+            return problems + ["テロップを1つ以上作ってください。"]
         prev_end = 0.0
         for i, x in enumerate(sorted(t.telops, key=lambda x: x.start), 1):
             lines = x.text.split("\n")

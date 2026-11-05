@@ -62,3 +62,50 @@ def make_sample_folder(folder: Path) -> dict[str, Path]:
     clips["duplicate"] = dup
     (folder / "メモ.txt").write_text("動画以外のファイルは無視される", encoding="utf-8")
     return clips
+
+
+# --- テロップの見た目確認用 ------------------------------------------------------
+
+def make_scene_clip(path: Path, seconds: float, speech: list[tuple[float, float]], hue: int = 0) -> Path:
+    """商品撮影らしい背景（グラデーション＋中央の本体の影）に、話し声の代わりの音を付けたクリップ。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    c0 = ["0x2b3a55", "0x3d2b55", "0x2b5548", "0x553d2b"][hue % 4]
+    v = (f"gradients=s=1920x1080:c0={c0}:c1=0xd8dde6:x0=0:y0=0:x1=1920:y1=1080:d={seconds}:r=30,"
+         "drawbox=x=560:y=300:w=800:h=470:color=0x1b1f27@0.92:t=fill,"
+         "drawbox=x=480:y=770:w=960:h=40:color=0x2a2f39@0.95:t=fill")
+    _run(["-f", "lavfi", "-i", v, "-f", "lavfi",
+          "-i", f"aevalsrc=exprs='{_speech_expr(speech)}':s=44100:d={seconds}",
+          "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", str(path)])
+    return path
+
+
+class ScriptedTranscriber:
+    """本物の文字起こしの代わり。音が鳴っている区間を探し、用意した文を順に当てはめる。"""
+
+    def __init__(self, sentences: list[str]):
+        self.sentences = sentences
+
+    def __call__(self, video: Path, hint: str):
+        import re
+        from app.pipeline.transcribe import Word
+        err = subprocess.run(["ffmpeg", "-hide_banner", "-nostdin", "-i", str(video), "-vn",
+                              "-af", "silencedetect=n=-35dB:d=0.3", "-f", "null", "-"],
+                             capture_output=True, text=True).stderr
+        h, m, sec = re.search(r"Duration: (\d+):(\d+):([\d.]+)", err).groups()
+        dur = int(h) * 3600 + int(m) * 60 + float(sec)
+        starts = [float(x) for x in re.findall(r"silence_start: ([\d.]+)", err)]
+        ends = [float(x) for x in re.findall(r"silence_end: ([\d.]+)", err)]
+        speech, cur = [], 0.0
+        for s, e in zip(starts, ends + [dur] * (len(starts) - len(ends))):
+            if s - cur > 0.3:
+                speech.append((cur, s))
+            cur = e
+        if dur - cur > 0.3:
+            speech.append((cur, dur))
+        words = []
+        for i, (a, b) in enumerate(speech):
+            text = self.sentences[i % len(self.sentences)]
+            pieces = [text[j:j + 3] for j in range(0, len(text), 3)]
+            step = (b - a) / len(pieces)
+            words += [Word(a + k * step, a + (k + 1) * step, p) for k, p in enumerate(pieces)]
+        return words

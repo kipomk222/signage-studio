@@ -162,12 +162,13 @@ TRANSCRIPT = [{"start": 0.5, "end": 3.0, "text": "今回はダイナブックの
 
 
 def test_telops_follow_length_rules():
-    too_long = {"telops": [{"start": 0.5, "end": 3.0, "text": "ダイナブックX9は持ち歩きにちょうどいい軽さのノートパソコン"}]}
-    good = {"telops": [{"start": 3.2, "end": 6.5, "text": "約1kgの軽さ"},
+    too_long = {"title": "dynabook X", "telops": [{"start": 0.5, "end": 3.0, "text": "ダイナブックX9は持ち歩きにちょうどいい軽さのノートパソコン"}]}
+    good = {"title": "dynabook X", "telops": [{"start": 3.2, "end": 6.5, "text": "約1kgの軽さ"},
                        {"start": 0.5, "end": 3.0, "text": "dynabook X9\n新登場"}]}
     fake = FakeClaude(too_long, good)
     scenes = [Scene(id="s1", title="導入", script="ご紹介します", seconds=5)]
-    telops = calls.make_telops(cc_with(fake), product_obj(), scenes, TRANSCRIPT, 8.0, Price())
+    title, telops = calls.make_telops(cc_with(fake), product_obj(), scenes, TRANSCRIPT, 8.0, Price())
+    assert title == "dynabook X"
     assert [t.start for t in telops] == [0.5, 3.2]  # 時刻順に並べ直す
     assert all(telop_length(t.text) <= 20 for t in telops)
     assert "20 文字を超えています" in fake.calls[1][1]
@@ -175,10 +176,18 @@ def test_telops_follow_length_rules():
 
 
 def test_telops_out_of_range_or_overlapping_are_rejected():
-    bad = {"telops": [{"start": 0, "end": 4, "text": "A"}, {"start": 3, "end": 9.5, "text": "B"}]}
+    bad = {"title": "P1X9ADBL", "telops": [{"start": 0, "end": 4, "text": "A"}, {"start": 3, "end": 9.5, "text": "B"}]}
     with pytest.raises(NeedsManualInput) as e:
         calls.make_telops(cc_with(FakeClaude(bad, bad)), product_obj(), [], TRANSCRIPT, 8.0, Price())
-    assert "重なって" in e.value.detail and "範囲" in e.value.detail
+    assert "重なって" in e.value.detail and "範囲" in e.value.detail and "型番" in e.value.detail
+
+
+def test_manual_telops_survive_regeneration():
+    from app.project import Telop
+    old = [Telop(start=2, end=4, text="手直し", manual=True), Telop(start=5, end=6, text="自動")]
+    new = [Telop(start=1, end=3, text="新A"), Telop(start=4.5, end=6, text="新B")]
+    merged = calls.merge_manual(new, old)
+    assert [t.text for t in merged] == ["手直し", "新B"]
 
 
 # --- YouTube ---------------------------------------------------------------------
@@ -190,7 +199,7 @@ def test_youtube_text():
 
 
 def test_prompts_have_no_unfilled_placeholders(tmp_path):
-    fake = FakeClaude(PRODUCT, plan_json(28.4), {"telops": [{"start": 0, "end": 2, "text": "A"}]},
+    fake = FakeClaude(PRODUCT, plan_json(28.4), {"title": "見出し", "telops": [{"start": 0, "end": 2, "text": "A"}]},
                       {"title": "t", "description": "d"})
     cc = cc_with(fake)
     p, _ = calls.research_product(cc, "P1X9ADBL", cache_dir=tmp_path)

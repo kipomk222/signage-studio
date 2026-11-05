@@ -182,3 +182,43 @@ def test_cli_reports_friendly_errors(tmp_path, capsys):
     assert main([str(tmp_path / "ない"), "--model", "X-1", "--projects", str(tmp_path)]) == 1
     assert "素材フォルダが見つかりません" in capsys.readouterr().out
     assert main([str(tmp_path), "--model", "X-1", "--out", "tv"]) == 2
+
+
+def test_edit_folder_with_telops(profile, samples, bgm_file, tmp_path):
+    """段階4: 文字起こし → 型番補正 → テロップ → タイトル・エンドカードまで通す。"""
+    import json as _json
+    from app.claude.runner import ClaudeCode, ProcResult
+    from app.pipeline.run import TelopInputs
+    from app.project import Price, Product, Telop
+    from tests.media import ScriptedTranscriber
+
+    product = Product(model_number="FMVU59L2BA", name="富士通 NOTE Uシリーズ", maker="富士通", category="パソコン",
+                      specs={"CPU": "Core Ultra 5 226V"})
+    prompts = []
+
+    def fake_claude(cmd, stdin, cwd, timeout):
+        prompts.append(stdin)
+        out = {"title": "軽さで選ぶ NOTE U", "telops": [{"start": 0.3, "end": 2.5, "text": "富士通 NOTE U"},
+                                                    {"start": 3.0, "end": 5.5, "text": "約908gの軽さ"}]}
+        return ProcResult(0, _json.dumps({"is_error": False, "structured_output": out}), "")
+
+    folder, _ = samples
+    report = edit_folder(
+        folder, "FMVU59L2BA", projects_root=tmp_path, bgm_path=bgm_file, profile=profile, progress=_quiet,
+        telop=TelopInputs(product=product, price=Price(mode="open"),
+                          claude=ClaudeCode(claude_path="claude", runner=fake_claude),
+                          transcriber=ScriptedTranscriber(["こちらはエフエムブイのノートユーです", "コアウルトラ五搭載"])))
+
+    assert "Core Ultra 5" in prompts[0] and "コアウルトラ五" not in prompts[0]   # 補正してから渡す
+    assert "NOTE U" in prompts[0] and "オープン価格" in prompts[0]
+    assert report.title == "軽さで選ぶ NOTE U" and len(report.telops) == 2
+    log = (report.project_dir / "output" / "字幕修正ログ.txt").read_text(encoding="utf-8")
+    assert "コアウルトラ五 → Core Ultra 5" in log
+    # タイトル3秒 + 本編 + エンドカード5秒（つなぎ目2か所で 0.3 秒ずつ重なる）
+    expected = report.joined_seconds + 3 + 5 - 0.6
+    assert report.exports[0].duration == pytest.approx(expected, abs=0.3)
+    project = load_project(report.project_dir)
+    assert project.title == "軽さで選ぶ NOTE U" and project.telops[1].text == "約908gの軽さ"
+    assert project.product.model_number == "FMVU59L2BA" and project.plan.price.mode == "open"
+    assert any("ロゴが見つからなかった" in n for n in report.notes)
+    assert "■ テロップ（2枚）" in report.text()
