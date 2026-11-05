@@ -59,6 +59,7 @@ class RunReport:
     title: str = ""
     telops: list[Telop] = field(default_factory=list)
     fixes: list[Fix] = field(default_factory=list)
+    edit_summary: str = ""
 
     def text(self) -> str:
         lines = ["■ 素材"]
@@ -71,6 +72,8 @@ class RunReport:
             tag = "  ※切りすぎ注意" if r.over_cut else ("  ※話し声なし・そのまま使用" if r.no_speech else "")
             lines.append(f"  {r.src.name}: {r.original:.1f}秒 → {r.kept:.1f}秒{tag}")
         lines.append(f"■ つないだ長さ: {self.joined_seconds:.1f}秒")
+        if self.edit_summary:
+            lines.append(f"■ 編集の考え方: {self.edit_summary}")
         if self.telops:
             lines.append(f"■ 冒頭タイトル: {self.title}")
             lines.append(f"■ テロップ（{len(self.telops)}枚）")
@@ -109,6 +112,7 @@ def edit_folder(
     keep_all: bool = False,
     target_seconds: int | None = None,
     telop: TelopInputs | None = None,
+    ai_edit: bool = True,
     profile: PlatformProfile | None = None,
     progress: Progress = print,
 ) -> RunReport:
@@ -127,6 +131,7 @@ def edit_folder(
     project.settings.bgm_level = level  # type: ignore[assignment]
     project.settings.fit = fit  # type: ignore[assignment]
     project.settings.outputs = outputs  # type: ignore[assignment]
+    project.settings.ai_edit = ai_edit
     if telop:
         project.product, project.plan.scenes = telop.product, telop.scenes
         project.plan.price, project.plan.extra_text = telop.price, telop.extra_text
@@ -151,7 +156,8 @@ def edit_folder(
     from app.workflow import find_bgm
     project = load_project(folder)
     report = RunReport(folder, clips, edit.cuts, edit.joined_seconds, exports, find_bgm(folder, project), notes,
-                       project.title, project.telops, edit.fixes)
+                       project.title, project.telops, edit.fixes,
+                       f"（Claude Code）{edit.summary}" if edit.source == "ai" else "")
     (folder / "output" / "レポート.txt").write_text(report.text(), encoding="utf-8")
     return report
 
@@ -225,6 +231,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--target", type=int, help="目標の長さ（秒）。省略時は150秒")
     ap.add_argument("--projects", type=Path, default=ROOT / "projects", help="プロジェクトの保存先")
     ap.add_argument("--no-telop", action="store_true", help="テロップ・タイトル・エンドカードを付けない")
+    ap.add_argument("--no-ai-edit", action="store_true",
+                    help="編集の判断を Claude Code にまかせず、機械的に編集する（無音カットと台本の順）")
     ap.add_argument("--paste", type=Path, help="商品ページから写した文章のファイル")
     ap.add_argument("--image", type=Path, nargs="+", help="商品ページのスクリーンショット")
     ap.add_argument("--price", default="hidden", help="価格: hidden（表示しない）/ open（オープン価格）/ 金額（例 248780）")
@@ -261,7 +269,8 @@ def main(argv: list[str] | None = None) -> int:
         telop = None if args.no_telop else prepare_telop(args)
         report = edit_folder(args.folder, args.model, projects_root=args.projects, bgm_path=args.bgm,
                              outputs=outputs, strength=args.strength, level=args.level,
-                             fit=args.fit, keep_all=args.keep_all, target_seconds=args.target, telop=telop)
+                             fit=args.fit, keep_all=args.keep_all, target_seconds=args.target, telop=telop,
+                             ai_edit=not args.no_ai_edit)
     except UserError as e:
         print(f"\n{e.what}\n{e.how}")
         return 1

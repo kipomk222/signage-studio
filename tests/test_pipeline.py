@@ -83,7 +83,7 @@ def test_inventory_marks_exclusion_candidates(profile, samples):
     assert not info["05_talk.mp4"].excluded
     assert info["02_vertical.mp4"].vertical and not info["02_vertical.mp4"].excluded
     assert "短い" in info["03_short.mp4"].exclude_reasons[0]
-    assert "音がほとんど" in info["04_silent.mp4"].exclude_reasons[0]
+    assert info["04_silent.mp4"].silent and not info["04_silent.mp4"].excluded   # 差し込み用に残す
     assert "01_talk.mp4" in info["06_copy_of_talk1.mp4"].exclude_reasons[0]
 
 
@@ -149,8 +149,9 @@ def test_edit_folder_end_to_end(profile, samples, bgm_file, tmp_path):
                          outputs=["store", "youtube"], profile=profile, progress=_quiet)
 
     assert {p.name: _sha(p) for p in folder.iterdir()} == before  # 元の素材は変えない
-    assert len(report.cuts) == 3  # 01, 02(縦), 05 を使用
-    assert 15 < report.joined_seconds < 20
+    assert len(report.cuts) == 4  # 01, 02(縦), 04(話し声なし), 05 を使用
+    assert next(r for r in report.cuts if r.src.name == "04_silent.mp4").no_speech
+    assert 20 < report.joined_seconds < 25
     for e in report.exports:
         streams = probe(profile.ffprobe, e.path)["streams"]
         v = next(s for s in streams if s["codec_type"] == "video")
@@ -163,7 +164,8 @@ def test_edit_folder_end_to_end(profile, samples, bgm_file, tmp_path):
 
     project = load_project(report.project_dir)
     assert project.stage is Stage.DONE
-    assert [c.file for c in project.clips if not c.excluded] == ["01_talk.mp4", "02_vertical.mp4", "05_talk.mp4"]
+    assert [c.file for c in project.clips if not c.excluded] == ["01_talk.mp4", "02_vertical.mp4", "04_silent.mp4",
+                                                                 "05_talk.mp4"]
     assert all(c.cut_ranges for c in project.clips if not c.excluded)
     assert project.settings.bgm_file == "bgm.m4a"
     assert (report.project_dir / "素材" / "01_talk.mp4").exists()
@@ -205,6 +207,7 @@ def test_edit_folder_with_telops(profile, samples, bgm_file, tmp_path):
     folder, _ = samples
     report = edit_folder(
         folder, "FMVU59L2BA", projects_root=tmp_path, bgm_path=bgm_file, profile=profile, progress=_quiet,
+        ai_edit=False,
         telop=TelopInputs(product=product, price=Price(mode="open"),
                           claude=ClaudeCode(claude_path="claude", runner=fake_claude),
                           transcriber=ScriptedTranscriber(["こちらはエフエムブイのノートユーです", "コアウルトラ五搭載"])))
@@ -242,7 +245,7 @@ def test_rerender_changes_colors_without_reediting(profile, samples, bgm_file, t
 
     folder, _ = samples
     report = edit_folder(folder, "FMVU59L2BA", projects_root=tmp_path, bgm_path=bgm_file, profile=profile,
-                         progress=_quiet,
+                         progress=_quiet, ai_edit=False,
                          telop=TelopInputs(product=Product(model_number="FMVU59L2BA", name="NOTE U"),
                                            claude=ClaudeCode(claude_path="claude", runner=fake_claude),
                                            transcriber=ScriptedTranscriber(["こんにちは"]),

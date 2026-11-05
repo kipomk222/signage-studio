@@ -21,21 +21,23 @@ from app.claude.calls import (
 )
 from app.claude.runner import ClaudeCode
 from app.errors import UserError
-from app.jobs import Job, checkpoint
+from app.jobs import Cancelled, Job, checkpoint
 from app.pipeline import bgm as bgm_step
 from app.pipeline.cards import END_SECONDS, TITLE_SECONDS, find_logo, make_end_card, make_title_card
 from app.pipeline.concat import FADE, concat_clips
 from app.pipeline.export import ExportResult, export_video
-from app.pipeline.ffmpeg import ffmpeg_base, run
+from app.pipeline.ffmpeg import duration_of, ffmpeg_base, run
 from app.pipeline.fixterms import Fix, TermFixer, collect_terms, log_text
 from app.pipeline.inventory import ClipInfo, list_videos, probe_clip, scan_folder
 from app.pipeline.normalize import normalize_clip
 from app.pipeline.scenes import assign_scenes, order_by_scene
-from app.pipeline.silence import STRENGTH, TIGHTEST_MIN_SILENCE, CutResult, jumpcut
+from app.pipeline.silence import STRENGTH, TIGHTEST_MIN_SILENCE, CutResult
 from app.pipeline.telop_render import build_telop_ass, burn_ass
 from app.pipeline.transcribe import Transcriber, Word, hint_text, to_phrases, transcribe
 from app.platform import PlatformProfile, get_profile
-from app.project import Clip, Project, Stage, create_project, load_project, save_project
+from app.project import (
+    Clip, EditDrop, EditInsert, EditPiece, EditPlan, Project, Stage, create_project, load_project, save_project,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 PROJECTS = ROOT / "projects"
@@ -184,7 +186,7 @@ def import_material(folder: Path, source: Path | list[Path], services: Services,
         _step(job, 0.45 + 0.55 * i / len(infos), f"見本の画像を作っています（{i}/{len(infos)}）")
         prev = old.get(c.path.name)
         clips.append(Clip(
-            file=c.path.name, duration=round(c.duration, 2), vertical=c.vertical,
+            file=c.path.name, duration=round(c.duration, 2), vertical=c.vertical, silent=c.silent,
             excluded=prev.excluded if prev else c.excluded,
             exclude_reason="、".join(c.exclude_reasons),
             scene_id=prev.scene_id if prev else None, scene_manual=prev.scene_manual if prev else False,
@@ -207,6 +209,10 @@ def _make_thumb(profile: PlatformProfile, clip: ClipInfo, dst: Path) -> None:
 
 
 # --- 編集 -----------------------------------------------------------------------
+#
+# 1. 下ごしらえ（prepare_analysis）: 形式をそろえる・話している範囲・文字起こし・映像の見本（結果はとっておく）
+# 2. 設計図（plan_edit）: Claude Code が「使う・切る・並べる・差し込む」を決める。だめなら機械的に決める
+# 3. 仕上げ（render_edit）: 設計図どおりにつなぎ、差し込みを重ね、テロップを作る
 
 @dataclass
 class EditResult:
@@ -214,103 +220,297 @@ class EditResult:
     joined_seconds: float = 0.0
     fixes: list[Fix] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    source: str = "auto"
+    summary: str = ""
 
 
-def build_edit(folder: Path, services: Services, with_telops: bool = True, job: Job | None = None) -> EditResult:
-    profile = services.prof()
-    project = load_project(folder)
-    work, out = folder / "work", folder / "output"
-    src = folder / "素材"
+@dataclass
+class ClipData:
+    file: str
+    norm: Path
+    duration: float
+    keeps: list[tuple[float, float]]      # 話している範囲（無音カットで残す所）
+    words: list[Word]
+    sheet: Path | None
+    no_speech: bool
+
+
+def _analysis_dir(folder: Path) -> Path:
+    return folder / "work" / "analysis"
+
+
+def _cached_json(path: Path, make):
+    import json
+    if path.exists():
+        return json.loads(path.read_text(encoding="utf-8"))
+    data = make()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    return data
+
+
+def prepare_analysis(folder: Path, services: Services, with_words: bool, tight: bool = False,
+                     job: Job | None = None, span: tuple[float, float] = (0.0, 0.5)) -> dict[str, ClipData]:
+    """クリップごとの下ごしらえ。一度作った結果はとっておき、作り直しでは使い回す。"""
+    from app.pipeline.analysis import contact_sheet
+    from app.pipeline.silence import detect_silences, keep_ranges
+    profile, project = services.prof(), load_project(folder)
+    src, adir = folder / "素材", _analysis_dir(folder)
     use = [c for c in project.clips if not c.excluded]
     if not use:
         raise UserError("使える動画がありませんでした。", "除外にしたクリップを戻すか、素材を入れ直してください。")
-    with_telops = with_telops and bool(project.product.name)
-    res = EditResult()
-    n = len(use)
-
-    # 形式をそろえる
-    for d in ("norm", "cut"):
-        shutil.rmtree(work / d, ignore_errors=True)
-    normalized = []
-    for i, c in enumerate(use, 1):
-        _step(job, 0.25 * i / n, f"形式をそろえています（{i}/{n}）")
-        info = probe_clip(profile, src / c.file)
-        normalized.append(normalize_clip(profile, info, work / "norm" / f"{i:03d}.mp4",
-                                         fit=project.settings.fit))
-
-    # 無音カット（目標の長さを超えたら少し強める）
     params = STRENGTH[project.settings.silence_strength]
-    target = project.plan.target_seconds - (TITLE_SECONDS + END_SECONDS if with_telops else 0)
-
-    def cut_all(p) -> list[CutResult]:
-        out_cuts = []
-        for i, nv in enumerate(normalized, 1):
-            _step(job, 0.25 + 0.2 * i / n, f"話していない部分を詰めています（{i}/{n}）")
-            out_cuts.append(jumpcut(profile, nv, work / "cut" / nv.name, p))
-        return out_cuts
-
-    cuts = cut_all(params)
-    if sum(r.kept for r in cuts) - FADE * (n - 1) > target and params.min_silence > TIGHTEST_MIN_SILENCE:
-        cuts = cut_all(replace(params, min_silence=TIGHTEST_MIN_SILENCE))
-        res.notes.append(f"目標の長さ（{target:.0f}秒）を超えたため、無音カットを強めました。")
-    for c, r in zip(use, cuts):
-        r.src = src / c.file
-        c.cut_ranges, c.kept_seconds = r.ranges, round(r.kept, 2)
-        if r.over_cut:
-            res.notes.append(f"「{c.file}」は半分以下まで短くなりました。切りすぎていないか確認してください。")
-
-    # 文字起こし（クリップごと）と型番の補正
-    words_by_clip: list[list[Word]] = [[] for _ in use]
-    fixer = TermFixer.for_product(project.product) if with_telops else None
-    if with_telops:
-        hint = hint_text(collect_terms(project.product)[:20] + [project.product.name])
-        for i, (c, r) in enumerate(zip(use, cuts), 1):
-            _step(job, 0.45 + 0.25 * i / n, f"話した内容を文字にしています（{i}/{n}）"
+    if tight:
+        params = replace(params, min_silence=TIGHTEST_MIN_SILENCE)
+    hint = hint_text(collect_terms(project.product)[:20] + [project.product.name]) if with_words else ""
+    lo, hi = span
+    out: dict[str, ClipData] = {}
+    for i, c in enumerate(use, 1):
+        frac = lambda k: lo + (hi - lo) * ((i - 1) + k) / len(use)  # noqa: E731
+        stem = Path(c.file).stem
+        norm = folder / "work" / "norm" / f"{stem}_{project.settings.fit}.mp4"
+        if not norm.exists() or norm.stat().st_mtime < (src / c.file).stat().st_mtime:
+            _step(job, frac(0.0), f"形式をそろえています（{i}/{len(use)}）")
+            normalize_clip(profile, probe_clip(profile, src / c.file), norm, fit=project.settings.fit)
+        duration = duration_of(profile.ffprobe, norm)
+        tag = f"{params.noise_db}_{params.min_silence}_{params.pad}"
+        keeps = [tuple(r) for r in _cached_json(
+            adir / f"{stem}_{project.settings.fit}_keeps_{tag}.json",
+            lambda: keep_ranges(detect_silences(profile, norm, params, duration), duration, params.pad))]
+        words: list[Word] = []
+        if with_words and keeps:
+            _step(job, frac(0.4), f"話した内容を文字にしています（{i}/{len(use)}）"
                   + ("　初回は準備に数分かかります" if i == 1 else ""))
-            words_by_clip[i - 1] = [] if r.no_speech else transcribe(profile, r.dst, hint, services.transcriber)
-            text, fx = fixer.fix("".join(w.text for w in words_by_clip[i - 1]), c.file)  # type: ignore[union-attr]
-            c.transcript = text
-            res.fixes += fx
+            words = [Word(**w) for w in _cached_json(
+                adir / f"{stem}_{project.settings.fit}_words.json",
+                lambda: [vars(w) for w in transcribe(profile, norm, hint, services.transcriber)])]
+        sheet = None
+        if with_words:
+            sheet = adir / f"sheet_{stem}.jpg"
+            if not sheet.exists():
+                _step(job, frac(0.8), f"映像の見本を作っています（{i}/{len(use)}）")
+                contact_sheet(profile, norm, duration, sheet, f"{c.file}（{duration:.1f}秒）")
+        out[c.file] = ClipData(c.file, norm, duration, keeps, words, sheet, not keeps)
+    return out
 
-    # 場面の振り分けと並べ替え
+
+def auto_plan(project: Project, data: dict[str, ClipData]) -> EditPlan:
+    """機械的な編集: クリップごとに話している範囲を使い、台本の場面順に並べる。"""
+    use = [c for c in project.clips if not c.excluded and c.file in data]
     if project.plan.scenes:
         manual = [c.scene_id if c.scene_manual else None for c in use]
         for c, a in zip(use, assign_scenes([c.transcript for c in use], project.plan.scenes, manual)):
             c.scene_id, c.scene_guessed = a.scene_id, a.guessed
-    order = order_by_scene(list(range(n)), lambda i: use[i].scene_id, project.plan.scenes) \
-        if project.plan.scenes else list(range(n))
-    pieces, piece_words = [], []
-    for i in order:
-        if cuts[i].kept < MIN_USABLE:
-            res.notes.append(f"「{use[i].file}」は残った部分が短すぎるため使いませんでした。")
+        order = order_by_scene(use, lambda c: c.scene_id, project.plan.scenes)
+    else:
+        order = use
+    pieces = []
+    for c in order:
+        d = data[c.file]
+        start, end = (d.keeps[0][0], d.keeps[-1][1]) if d.keeps else (0.0, d.duration)
+        pieces.append(EditPiece(clip=c.file, start=start, end=end, scene_id=c.scene_id,
+                                reason="話している範囲" if d.keeps else "話し声のない映像"))
+    return EditPlan(source="auto", summary="クリップごとに話している範囲を使い、台本の場面順に並べました。",
+                    pieces=pieces)
+
+
+def ai_plan(project: Project, data: dict[str, ClipData], services: Services, fixer: TermFixer) -> EditPlan:
+    from app.claude.calls import ClipBrief, decide_edit
+    briefs = []
+    for c in project.clips:
+        if c.excluded or c.file not in data:
             continue
-        pieces.append(cuts[i].dst)
-        piece_words.append((cuts[i].kept, words_by_clip[i]))
-    if not pieces:
-        raise UserError("つなげられる部分が残りませんでした。", "無音カットの強さを「弱」にして、もう一度お試しください。")
+        d = data[c.file]
+        phrases = [(ph.start, ph.end, fixer.fix(ph.text)[0]) for ph in to_phrases(d.words)]
+        briefs.append(ClipBrief(c.file, round(d.duration, 2), phrases, d.sheet))
+    budget = project.plan.target_seconds - TITLE_SECONDS - END_SECONDS
+    e = decide_edit(services.cc(), project.product, project.plan.scenes, budget, briefs)
+    return EditPlan(
+        source="ai", summary=e.summary,
+        pieces=[EditPiece(clip=p.clip, start=round(p.start, 2), end=round(p.end, 2),
+                          scene_id=p.scene_id or None, reason=p.reason) for p in e.pieces],
+        inserts=[EditInsert(clip=i.clip, start=round(i.start, 2), end=round(i.end, 2), piece=i.over_piece,
+                            offset=round(i.offset, 2), reason=i.reason) for i in e.inserts],
+        dropped=[EditDrop(clip=d.clip, start=round(d.start, 2), end=round(d.end, 2), reason=d.reason)
+                 for d in e.dropped],
+    )
 
-    _step(job, 0.75, "クリップをつないでいます")
-    res.joined_seconds = concat_clips(profile, pieces, work / "joined.mp4")
-    res.cuts = cuts
 
-    # テロップ
+def build_edit(folder: Path, services: Services, with_telops: bool = True, job: Job | None = None,
+               ai: bool | None = None) -> EditResult:
+    """素材から、設計図を作って編集する（画面の「編集を始める」）。"""
+    project = load_project(folder)
+    with_telops = with_telops and bool(project.product.name)
+    use_ai = (project.settings.ai_edit if ai is None else ai) and with_telops
+    res = EditResult()
+    data = prepare_analysis(folder, services, with_words=with_telops, job=job, span=(0.0, 0.5))
+
+    fixer = TermFixer.for_product(project.product) if with_telops else None
+    project = load_project(folder)
+    for c in project.clips:
+        if c.file in data and fixer:
+            text, fx = fixer.fix("".join(w.text for w in data[c.file].words), c.file)
+            c.transcript, res.fixes = text, res.fixes + fx
+
+    plan: EditPlan | None = None
+    if use_ai:
+        _step(job, 0.5, "Claude Code が素材を見て、編集を考えています（数分かかります）")
+        try:
+            plan = ai_plan(project, data, services, fixer)  # type: ignore[arg-type]
+        except Cancelled:
+            raise
+        except UserError:
+            res.notes.append("Claude Code による編集がうまくいかなかったため、機械的に編集しました。")
+    if plan is None:
+        budget = project.plan.target_seconds - (TITLE_SECONDS + END_SECONDS if with_telops else 0)
+        estimate = sum(sum(e - s for s, e in d.keeps) or d.duration for d in data.values()) - FADE * (len(data) - 1)
+        if estimate > budget and STRENGTH[project.settings.silence_strength].min_silence > TIGHTEST_MIN_SILENCE:
+            data = prepare_analysis(folder, services, with_words=with_telops, tight=True, span=(0.5, 0.55))
+            res.notes.append(f"目標の長さ（{budget:.0f}秒）を超えたため、無音カットを強めました。")
+        plan = auto_plan(project, data)
+    if plan.source == "ai":  # クリップの場面の表示を、Claude Code が選んだ場面にそろえる
+        for c in project.clips:
+            if not c.scene_manual:
+                first = next((p for p in plan.pieces if p.clip == c.file), None)
+                c.scene_id, c.scene_guessed = (first.scene_id if first else None), False
+    project.edit = plan
+    save_project(folder, project)
+    res.source, res.summary = plan.source, plan.summary
+    return render_edit(folder, services, with_telops=with_telops, job=job, result=res, data=data)
+
+
+def replan_edit(folder: Path, services: Services, job: Job | None = None) -> EditResult:
+    """Claude Code に編集を考え直してもらう（画面の「AIで編集し直す」）。"""
+    return build_edit(folder, services, with_telops=True, job=job, ai=True)
+
+
+def render_edit(folder: Path, services: Services, with_telops: bool = True, job: Job | None = None,
+                result: EditResult | None = None, data: dict[str, ClipData] | None = None) -> EditResult:
+    """設計図どおりに動画を作り、テロップを付ける（画面で設計図を直したあとの「この内容で作り直す」も）。"""
+    from app.pipeline.edl import apply_inserts, map_time, place_inserts, render_plan
+    profile, project = services.prof(), load_project(folder)
+    if project.edit is None or not any(p.enabled for p in project.edit.pieces):
+        raise UserError("使う部分がありません。", "「使う」にした部分を1つ以上にしてください。")
+    with_telops = with_telops and bool(project.product.name)
+    res = result or EditResult(source=project.edit.source, summary=project.edit.summary)
+    data = data or prepare_analysis(folder, services, with_words=with_telops, job=job, span=(0.0, 0.3))
+    work, out = folder / "work", folder / "output"
+
+    missing = [p.clip for p in project.edit.pieces + project.edit.inserts if p.clip not in data]  # type: ignore[operator]
+    if missing:
+        raise UserError(f"「{missing[0]}」が素材の一覧にありません。", "そのクリップを「使う」に戻すか、設計図から外してください。")
+    norm = {f: d.norm for f, d in data.items()}
+    keeps = {f: d.keeps for f, d in data.items()}
+    try:
+        base, layouts, total = render_plan(
+            profile, project.edit, norm, keeps, work,
+            progress=lambda f, m: _step(job, 0.65 + 0.15 * f, m))
+    except ValueError:
+        raise UserError("つなげられる部分が残りませんでした。",
+                        "使う部分を増やすか、無音カットの強さを「弱」にして、もう一度お試しください。") from None
+    _step(job, 0.8, "差し込みの映像を重ねています")
+    placed = place_inserts(project.edit, layouts, total)
+    apply_inserts(profile, base, placed, norm, work / "joined.mp4")
+    res.joined_seconds = total
+
+    # レポート用: クリップごとに、どれだけ使ったか
+    res.cuts = []
+    for c in project.clips:
+        if c.file in data:
+            ranges = [r for lay in layouts if lay.clip == c.file for r in lay.ranges]
+            kept = sum(e - s for s, e in ranges)
+            res.cuts.append(CutResult(src=folder / "素材" / c.file, dst=data[c.file].norm,
+                                      original=data[c.file].duration, kept=kept, ranges=ranges,
+                                      no_speech=data[c.file].no_speech))
+            c.cut_ranges, c.kept_seconds = ranges, round(kept, 2)
+
     if with_telops:
-        transcript, offset = [], 0.0
-        for kept, words in piece_words:
-            for ph in to_phrases([Word(w.start + offset, w.end + offset, w.text) for w in words]):
-                text, _ = fixer.fix(ph.text, f"{ph.start:.1f}秒")  # type: ignore[union-attr]
-                transcript.append({"start": ph.start, "end": ph.end, "text": text})
-            offset += kept - FADE
+        fixer = TermFixer.for_product(project.product)
+        timeline = []
+        for f, d in data.items():
+            for w in d.words:
+                at = map_time(layouts, f, (w.start + w.end) / 2)
+                if at is not None:
+                    half = (w.end - w.start) / 2
+                    timeline.append(Word(round(at - half, 3), round(at + half, 3), w.text))
+        timeline.sort(key=lambda w: w.start)
+        transcript = []
+        for ph in to_phrases(timeline):
+            text, _ = fixer.fix(ph.text, f"{ph.start:.1f}秒")
+            transcript.append({"start": ph.start, "end": ph.end, "text": text})
         (out / "字幕修正ログ.txt").write_text(log_text(res.fixes), encoding="utf-8")
-        _step(job, 0.85, "テロップを作っています")
+        _step(job, 0.88, "テロップを作っています")
         title, new = make_telops(services.cc(), project.product, project.plan.scenes, transcript,
-                                 res.joined_seconds, project.plan.price, project.plan.extra_text)
+                                 total, project.plan.price, project.plan.extra_text)
         project.title, project.telops = title, merge_manual(new, project.telops)
 
     project.complete_stage(Stage.MATERIAL)
     save_project(folder, project)
+    make_edit_thumbs(folder, services)
     _step(job, 1.0, "編集ができました")
     return res
+
+
+def edit_thumb(folder: Path, clip: str, t: float) -> Path:
+    return _analysis_dir(folder) / "thumbs" / f"{Path(clip).stem}_{t:.2f}.jpg"
+
+
+def make_edit_thumbs(folder: Path, services: Services) -> None:
+    """確認画面に出す、部分・差し込み・切った部分の見本画像。"""
+    project, profile = load_project(folder), services.prof()
+    if project.edit is None:
+        return
+    items = [(x.clip, x.start) for x in project.edit.pieces + project.edit.inserts + project.edit.dropped]  # type: ignore[operator]
+    for clip, t in items:
+        dst = edit_thumb(folder, clip, t)
+        norm = folder / "work" / "norm" / f"{Path(clip).stem}_{project.settings.fit}.mp4"
+        if dst.exists() or not norm.exists():
+            continue
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            run([*ffmpeg_base(profile.ffmpeg), "-ss", f"{t + 0.3:.2f}", "-i", str(norm), "-frames:v", "1",
+                 "-vf", "scale=240:-2", str(dst)], what="見本の画像を作れませんでした。")
+        except UserError:
+            pass
+
+
+def spoken_text(folder: Path, project: Project, clip: str, start: float, end: float) -> str:
+    """そのクリップの start〜end で話している内容（文字起こしから）。"""
+    import json
+    path = _analysis_dir(folder) / f"{Path(clip).stem}_{project.settings.fit}_words.json"
+    if not path.exists():
+        return ""
+    words = json.loads(path.read_text(encoding="utf-8"))
+    text = "".join(w["text"] for w in words if start - 0.05 <= (w["start"] + w["end"]) / 2 <= end + 0.05).strip()
+    return TermFixer.for_product(project.product).fix(text)[0] if text and project.product.name else text
+
+
+def restore_drop(project: Project, index: int) -> None:
+    """切った部分を「戻す」: 同じクリップの部分の中で、元の時間の順になる位置に入れる（なければ最後）。"""
+    d = project.edit.dropped.pop(index)  # type: ignore[union-attr]
+    pieces = project.edit.pieces  # type: ignore[union-attr]
+    same = [i for i, p in enumerate(pieces) if p.clip == d.clip]
+    later = [i for i in same if pieces[i].start > d.start]   # 元の時間の順に戻す
+    at = later[0] if later else (same[-1] + 1 if same else len(pieces))
+    scene = pieces[(later or same)[0]].scene_id if same else None
+    pieces.insert(at, EditPiece(clip=d.clip, start=d.start, end=d.end, scene_id=scene, reason=f"戻した（{d.reason}）"))
+    for ins in project.edit.inserts:  # type: ignore[union-attr]
+        if ins.piece >= at:
+            ins.piece += 1
+
+
+def move_piece(project: Project, index: int, delta: int) -> None:
+    """部分の順番を入れ替える（差し込みの重ね先も一緒に動かす）。"""
+    pieces = project.edit.pieces  # type: ignore[union-attr]
+    j = index + delta
+    if not 0 <= j < len(pieces):
+        return
+    pieces[index], pieces[j] = pieces[j], pieces[index]
+    for ins in project.edit.inserts:  # type: ignore[union-attr]
+        if ins.piece == index:
+            ins.piece = j
+        elif ins.piece == j:
+            ins.piece = index
 
 
 # --- 確認・書き出し --------------------------------------------------------------

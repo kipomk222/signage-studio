@@ -66,15 +66,23 @@ def make_sample_folder(folder: Path) -> dict[str, Path]:
 
 # --- テロップの見た目確認用 ------------------------------------------------------
 
-def make_scene_clip(path: Path, seconds: float, speech: list[tuple[float, float]], hue: int = 0) -> Path:
-    """商品撮影らしい背景（グラデーション＋中央の本体の影）に、話し声の代わりの音を付けたクリップ。"""
+def make_scene_clip(path: Path, seconds: float, speech: list[tuple[float, float]], hue: int = 0,
+                    caption: str = "") -> Path:
+    """商品撮影らしい背景（グラデーション＋中央の本体の影）に、話し声の代わりの音を付けたクリップ。
+
+    caption を付けると画面に文字で書き込む（映像の見本から内容を判断できるか試すため）。
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     c0 = ["0x2b3a55", "0x3d2b55", "0x2b5548", "0x553d2b"][hue % 4]
     v = (f"gradients=s=1920x1080:c0={c0}:c1=0xd8dde6:x0=0:y0=0:x1=1920:y1=1080:d={seconds}:r=30,"
          "drawbox=x=560:y=300:w=800:h=470:color=0x1b1f27@0.92:t=fill,"
          "drawbox=x=480:y=770:w=960:h=40:color=0x2a2f39@0.95:t=fill")
+    if caption:
+        font = (Path(__file__).resolve().parents[1] / "assets" / "fonts" / "NotoSansJP-Bold.otf").as_posix()
+        v += f",drawtext=fontfile='{font}':text='{caption}':fontsize=72:fontcolor=white:x=(w-tw)/2:y=480"
+    expr = _speech_expr(speech) if speech else "0.0005*(random(0)-0.5)"
     _run(["-f", "lavfi", "-i", v, "-f", "lavfi",
-          "-i", f"aevalsrc=exprs='{_speech_expr(speech)}':s=44100:d={seconds}",
+          "-i", f"aevalsrc=exprs='{expr}':s=44100:d={seconds}",
           "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", str(path)])
     return path
 

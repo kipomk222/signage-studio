@@ -28,6 +28,7 @@ class ClipInfo:
     mean_db: float | None
     size_bytes: int
     exclude_reasons: list[str] = field(default_factory=list)
+    silent: bool = False  # 話し声がない（実演・手元アップなど、差し込みに使う映像）
 
     @property
     def vertical(self) -> bool:
@@ -117,7 +118,7 @@ def scan_folder(profile: PlatformProfile, folder: Path) -> list[ClipInfo]:
         if clip.duration < MIN_SECONDS:
             clip.exclude_reasons.append(f"{MIN_SECONDS:.0f}秒未満の短いクリップです")
         if not clip.has_audio or (clip.mean_db is not None and clip.mean_db <= SILENT_DB):
-            clip.exclude_reasons.append("音がほとんど入っていません")
+            clip.silent = True  # 除外はしない（差し込み用の映像として使う）
         key = (clip.size_bytes, round(clip.duration, 2))
         if key in seen:
             clip.exclude_reasons.append(f"「{seen[key].path.name}」と同じ内容のようです")

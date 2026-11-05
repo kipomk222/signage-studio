@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 import os
 import tempfile
 from datetime import datetime
@@ -12,6 +13,7 @@ from app.claude.images import IMAGE_EXTS, prepare_images
 from app.claude.runner import ROOT, ClaudeCode, load_prompt
 from app.errors import UserError
 from app.claude.schemas import (
+    AiEdit, make_edit_check,
     TELOP_MAX_CHARS, TITLE_MAX_CHARS, PlanOut, ProductInfo, TelopsOut, YoutubeOut,
     check_product, check_youtube, tidy_pasted_sources, make_plan_check, make_telop_check, scenes_budget,
 )
@@ -22,6 +24,7 @@ RESEARCH_TOOLS = ["WebSearch", "WebFetch"]
 RESEARCH_TIMEOUT = 420
 PASTE_MAX_CHARS = 60_000
 WRITE_TIMEOUT = 240
+EDIT_TIMEOUT = 900
 
 
 # --- 文章に直す ---------------------------------------------------------------
@@ -163,3 +166,42 @@ def youtube_text(cc: ClaudeCode, product: Product, telops: list[Telop], price: P
     lines = "\n".join(f"{t.start:.0f}秒: {t.text.replace(chr(10), ' ')}" for t in telops) or "（なし）"
     prompt = load_prompt("youtube", product=product_text(product), telops=lines, price=price_text(price))
     return cc.ask(prompt, YoutubeOut, timeout=WRITE_TIMEOUT, check=check_youtube)
+
+
+
+# --- 編集の判断 -------------------------------------------------------------------
+
+@dataclass
+class ClipBrief:
+    """Claude Code に渡す、クリップ1本分の中身。"""
+
+    file: str
+    duration: float
+    phrases: list[tuple[float, float, str]]   # (始まり, 終わり, 話した内容)
+    sheet: Path | None = None
+
+
+def clips_text(clips: list[ClipBrief]) -> str:
+    out = []
+    for c in clips:
+        head = f"## {c.file}（{c.duration:.1f}秒）"
+        if not c.phrases:
+            out.append(head + "\n（話し声なし）")
+            continue
+        lines = "\n".join(f"{a:.2f}-{b:.2f}: {t}" for a, b, t in c.phrases)
+        out.append(f"{head}\n{lines}")
+    return "\n\n".join(out)
+
+
+def decide_edit(cc: ClaudeCode, product: Product, scenes: list[Scene], budget: float,
+                clips: list[ClipBrief]) -> AiEdit:
+    """素材の中身（話した内容・映像の見本）から、編集の設計図を作ってもらう。"""
+    scene_lines = "\n".join(f"- {s.id}「{s.title}」{s.seconds:.0f}秒: {s.script}" for s in scenes) or \
+        "（台本なし。scene_id は空文字にする）"
+    sheets = [c.sheet for c in clips if c.sheet and c.sheet.exists()]
+    prompt = load_prompt("edit", product=product_text(product), scenes=scene_lines, budget=f"{budget:.0f}",
+                         clips=clips_text(clips),
+                         sheets="\n".join(f"- {p.name}（{p.stem.removeprefix('sheet_')}）" for p in sheets) or "（なし）")
+    check = make_edit_check({c.file: c.duration for c in clips}, {s.id for s in scenes}, budget)
+    return cc.ask(prompt, AiEdit, tools=["Read"] if sheets else [], files=sheets, timeout=EDIT_TIMEOUT,
+                  check=check)

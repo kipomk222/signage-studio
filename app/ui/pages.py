@@ -444,6 +444,8 @@ async def material_page(pid: str) -> None:
                                 ui.label(f"{c.duration:.1f}秒").classes("hint")
                                 if c.vertical:
                                     ui.badge("縦撮り").props("outline color=orange")
+                                if c.silent:
+                                    ui.badge("話し声なし（差し込み用）").props("outline color=teal")
                                 if c.kept_seconds:
                                     ui.label(f"→ {c.kept_seconds:.1f}秒").classes("hint")
                             if c.exclude_reason:
@@ -474,6 +476,9 @@ async def material_page(pid: str) -> None:
                           on_change=lambda e: (setattr(project.settings, "fit", e.value), persist())) \
                     .props("outlined").classes("w-64")
             telop_sw = ui.switch("テロップを入れる", value=bool(project.product.name))
+            ui.switch("編集の判断を Claude Code にまかせる（言い直しを切る・並べる・差し込む）",
+                      value=project.settings.ai_edit,
+                      on_change=lambda e: (setattr(project.settings, "ai_edit", e.value), persist()))
 
         async def start_edit() -> None:
             save_project(folder, project)
@@ -526,8 +531,11 @@ async def review_page(pid: str) -> None:
 
             ui.button("プレビューを作る", icon="play_circle", on_click=make_preview).props("outline")
 
+        # --- 編集の内容 ---
+        edit_section(project, folder, pid)
+
         # --- 色 ---
-        with section("② テロップの色", "カラーコード（#RRGGBB）で入れるか、色見本から選びます。"):
+        with section("③ テロップの色", "カラーコード（#RRGGBB）で入れるか、色見本から選びます。"):
             with ui.row().classes("gap-4 items-end"):
                 def color_box(label: str, attr: str) -> None:
                     def changed(e) -> None:
@@ -550,7 +558,7 @@ async def review_page(pid: str) -> None:
                     .props("outlined").classes("w-40")
 
         # --- タイトルとテロップ ---
-        with section("③ 冒頭タイトルとテロップ",
+        with section("④ 冒頭タイトルとテロップ",
                      "文言・時刻・フォント・色を直せます。**ことば** と囲むと強調色になります。直したテロップは作り直しても残ります。"):
             title = ui.input("冒頭タイトル", value=project.title).props("outlined").classes("w-full")
             title.on("blur", lambda: (setattr(project, "title", title.value or ""), persist()))
@@ -610,7 +618,7 @@ async def review_page(pid: str) -> None:
             telops_view()
 
         # --- BGM ---
-        with section("④ BGM"):
+        with section("⑤ BGM"):
             with ui.row().classes("gap-4"):
                 choices = wf.bgm_choices()
                 if choices:
@@ -627,6 +635,115 @@ async def review_page(pid: str) -> None:
         with ui.row().classes("w-full justify-end"):
             ui.button("書き出しへ進む", icon="arrow_forward",
                       on_click=lambda: (persist(), ui.navigate.to(f"/p/{pid}/export"))).classes("big-button")
+
+
+def edit_section(project: Project, folder: Path, pid: str) -> None:
+    """Claude Code（または機械的な編集）が決めた、使う部分・差し込み・切った部分の一覧。"""
+    edit = project.edit
+    dirty = {"changed": False}
+
+    def persist() -> None:
+        dirty["changed"] = True
+        save_project(folder, project)
+        redo.props("color=orange")
+        redo.set_text("直した内容で作り直す")
+
+    def thumb(clip: str, t: float, width: str = "w-40") -> None:
+        path = wf.edit_thumb(folder, clip, t)
+        if path.exists():
+            ui.image(media_url(path)).classes(f"{width} rounded shrink-0")
+        else:
+            ui.element("div").classes(f"{width} h-20 bg-gray-200 rounded shrink-0")
+
+    def say(clip: str, a: float, b: float) -> str:
+        text = wf.spoken_text(folder, project, clip, a, b)
+        return f"「{text}」" if text else "（話し声なし）"
+
+    scene_names = {s.id: s.title for s in project.plan.scenes}
+
+    with section("② 編集の内容", "使う部分を上から順につなぎます。理由を確かめて、違うところは直してください。"):
+        if edit is None:
+            ui.label("まだ編集していません。素材の画面で「編集を始める」を押してください。").classes("hint")
+            return
+        with ui.row().classes("items-center gap-2"):
+            if edit.source == "ai":
+                ui.badge("Claude Code が編集").props("color=primary")
+            else:
+                ui.badge("機械的に編集（無音カットと台本の順）").props("color=grey")
+            ui.label(edit.summary).classes("text-sm")
+
+        @ui.refreshable
+        def pieces_view() -> None:
+            for i, p in enumerate(edit.pieces):
+                with ui.card().classes("w-full gap-2" + ("" if p.enabled else " opacity-50")).props("flat bordered"):
+                    with ui.row().classes("w-full items-start gap-3 no-wrap"):
+                        ui.label(str(i + 1)).classes("bg-primary text-white rounded-full w-8 h-8 flex items-center "
+                                                     "justify-center font-bold shrink-0")
+                        thumb(p.clip, p.start)
+                        with ui.column().classes("grow gap-1"):
+                            with ui.row().classes("items-center gap-2"):
+                                if p.scene_id in scene_names:
+                                    ui.badge(scene_names[p.scene_id]).props("outline")
+                                ui.label(f"{p.clip}　{p.start:.1f}〜{p.end:.1f}秒（{p.end - p.start:.1f}秒）") \
+                                    .classes("font-mono text-sm")
+                            ui.label(say(p.clip, p.start, p.end)).classes("text-sm")
+                            if p.reason:
+                                ui.label(f"理由: {p.reason}").classes("hint text-sm")
+                        with ui.column().classes("items-end gap-1 shrink-0"):
+                            ui.switch("使う", value=p.enabled,
+                                      on_change=lambda e, p=p: (setattr(p, "enabled", e.value), persist(),
+                                                                pieces_view.refresh()))
+                            with ui.row().classes("gap-0"):
+                                ui.button(icon="arrow_upward", on_click=lambda i=i: (
+                                    wf.move_piece(project, i, -1), persist(), pieces_view.refresh())) \
+                                    .props("flat dense").tooltip("前へ")
+                                ui.button(icon="arrow_downward", on_click=lambda i=i: (
+                                    wf.move_piece(project, i, 1), persist(), pieces_view.refresh())) \
+                                    .props("flat dense").tooltip("後ろへ")
+                    for ins in [x for x in edit.inserts if x.piece == i]:
+                        with ui.row().classes("w-full items-center gap-3 no-wrap pl-12" +
+                                              ("" if ins.enabled else " opacity-50")):
+                            ui.icon("subdirectory_arrow_right", color="primary")
+                            thumb(ins.clip, ins.start, "w-28")
+                            with ui.column().classes("grow gap-0"):
+                                ui.label(f"差し込み: {ins.clip} {ins.start:.1f}〜{ins.end:.1f}秒を、"
+                                         f"この部分の {ins.offset:.1f}秒後から重ねる（声はそのまま）").classes("text-sm")
+                                if ins.reason:
+                                    ui.label(f"理由: {ins.reason}").classes("hint text-sm")
+                            ui.switch("使う", value=ins.enabled,
+                                      on_change=lambda e, ins=ins: (setattr(ins, "enabled", e.value), persist(),
+                                                                    pieces_view.refresh()))
+            if edit.dropped:
+                with ui.expansion(f"切った部分（{len(edit.dropped)}か所）", icon="content_cut").classes("w-full"):
+                    for k, d in enumerate(edit.dropped):
+                        with ui.row().classes("w-full items-center gap-3 no-wrap border-b py-2"):
+                            thumb(d.clip, d.start, "w-28")
+                            with ui.column().classes("grow gap-0"):
+                                ui.label(f"{d.clip}　{d.start:.1f}〜{d.end:.1f}秒　{say(d.clip, d.start, d.end)}") \
+                                    .classes("text-sm")
+                                ui.label(f"理由: {d.reason}").classes("hint text-sm")
+                            ui.button("戻す", icon="undo", on_click=lambda k=k: (
+                                wf.restore_drop(project, k), persist(), pieces_view.refresh())).props("flat")
+
+        pieces_view()
+
+        async def rerender() -> None:
+            got = await run_job("直した内容で作り直しています", wf.render_edit, folder, CONFIG.services)
+            if got is not None:
+                ui.navigate.to(f"/p/{pid}/review")
+
+        async def ai_again() -> None:
+            got = await run_job("Claude Code が編集を考え直しています", wf.replan_edit, folder, CONFIG.services)
+            if got is not None:
+                for n in got.notes:
+                    ui.notify(n, type="warning", timeout=8000, position="top-right")
+                ui.navigate.to(f"/p/{pid}/review")
+
+        with ui.row().classes("gap-3"):
+            redo = ui.button("この内容で作り直す", icon="refresh", on_click=rerender).props("outline")
+            ui.button("Claude Code に編集し直してもらう", icon="auto_awesome", on_click=ai_again).props("flat")
+        ui.label("作り直すと、テロップも新しい編集に合わせて作り直します（手で直したテロップは残ります）。") \
+            .classes("hint text-sm")
 
 
 # =============================================================================

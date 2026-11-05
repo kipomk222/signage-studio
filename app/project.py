@@ -103,9 +103,50 @@ class Clip(BaseModel):
     exclude_reason: str = ""
     duration: float = 0
     vertical: bool = False
+    silent: bool = False  # 話し声なし（差し込み用の映像）
     transcript: str = ""
     cut_ranges: list[tuple[float, float]] = Field(default_factory=list)
     kept_seconds: float = 0
+
+
+class EditPiece(BaseModel):
+    """完成動画に使う部分（クリップのどこからどこまで）。上から順につなぐ。"""
+
+    clip: str
+    start: float
+    end: float
+    scene_id: str | None = None
+    reason: str = ""
+    enabled: bool = True
+
+
+class EditInsert(BaseModel):
+    """差し込み: 説明中の映像に、別のクリップの映像を重ねる（声は説明のまま）。"""
+
+    clip: str
+    start: float          # 差し込むクリップの、どこから
+    end: float            # どこまで
+    piece: int            # どの部分（pieces の何番目）に重ねるか
+    offset: float = 0.0   # その部分の始まりから何秒後に重ねるか（元の時間で）
+    reason: str = ""
+    enabled: bool = True
+
+
+class EditDrop(BaseModel):
+    """切った部分（言い直し・失敗など）。確認画面で「戻す」ことができる。"""
+
+    clip: str
+    start: float
+    end: float
+    reason: str = ""
+
+
+class EditPlan(BaseModel):
+    source: Literal["ai", "auto"] = "auto"   # Claude Code が決めた／機械的に決めた
+    summary: str = ""
+    pieces: list[EditPiece] = Field(default_factory=list)
+    inserts: list[EditInsert] = Field(default_factory=list)
+    dropped: list[EditDrop] = Field(default_factory=list)
 
 
 class Telop(BaseModel):
@@ -148,6 +189,7 @@ class Settings(BaseModel):
     bgm_level: Literal["small", "medium", "large"] = "medium"
     silence_strength: Literal["weak", "normal", "strong"] = "normal"
     fit: Literal["pad", "crop"] = "pad"  # 縦撮りを 黒帯／切り抜き
+    ai_edit: bool = True                  # 編集の判断を Claude Code にまかせる
     outputs: list[Literal["store", "youtube"]] = Field(default_factory=lambda: ["store"])
     telop_style: TelopStyle = Field(default_factory=TelopStyle)
 
@@ -170,6 +212,7 @@ class Project(BaseModel):
     youtube_description: str = ""
     plan: Plan = Field(default_factory=Plan)
     clips: list[Clip] = Field(default_factory=list)
+    edit: EditPlan | None = None
     telops: list[Telop] = Field(default_factory=list)
     settings: Settings = Field(default_factory=Settings)
     history: list[HistoryEntry] = Field(default_factory=list)

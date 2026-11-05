@@ -157,3 +157,86 @@ def check_youtube(y: YoutubeOut) -> list[str]:
     if len(y.description) > 4500:
         problems.append("description は4500文字以内にしてください。")
     return problems
+
+
+# --- 編集の判断 -----------------------------------------------------------------
+
+class AiPiece(_Strict):
+    clip: str        # ファイル名
+    start: float     # 秒（そのクリップの中の時刻）
+    end: float
+    scene_id: str    # 台本の場面（場面がなければ空文字）
+    reason: str
+
+
+class AiInsert(_Strict):
+    clip: str        # 差し込むクリップ
+    start: float
+    end: float
+    over_piece: int  # pieces の何番目（0始まり）に重ねるか
+    offset: float    # その部分の始まりから何秒後に重ねるか
+    reason: str
+
+
+class AiDrop(_Strict):
+    clip: str
+    start: float
+    end: float
+    reason: str
+
+
+class AiEdit(_Strict):
+    summary: str
+    pieces: list[AiPiece]
+    inserts: list[AiInsert]
+    dropped: list[AiDrop]
+
+
+EDIT_OVER = 1.2     # 目標の長さをこれ以上こえたらやり直し
+INSERT_MIN, INSERT_MAX = 1.0, 8.0
+
+
+def make_edit_check(durations: dict[str, float], scene_ids: set[str], budget: float):
+    def check(e: AiEdit) -> list[str]:
+        problems: list[str] = []
+        if not e.pieces:
+            return ["pieces が空です。使う部分を1つ以上選んでください。"]
+        spans: dict[str, list[tuple[float, float]]] = {}
+        for i, p in enumerate(e.pieces):
+            d = durations.get(p.clip)
+            if d is None:
+                problems.append(f"pieces[{i}] の clip「{p.clip}」はありません。一覧のファイル名を使ってください。")
+                continue
+            if not (0 <= p.start < p.end <= d + 0.05):
+                problems.append(f"pieces[{i}] の時刻 {p.start}〜{p.end} が「{p.clip}」の長さ（{d:.1f}秒）の範囲外です。")
+            elif p.end - p.start < 0.8:
+                problems.append(f"pieces[{i}] が短すぎます（0.8秒以上にしてください）。")
+            if scene_ids and p.scene_id not in scene_ids:
+                problems.append(f"pieces[{i}] の scene_id「{p.scene_id}」は台本にありません。")
+            for s, t in spans.get(p.clip, []):
+                if p.start < t and s < p.end:
+                    problems.append(f"pieces[{i}] が、同じクリップの別の部分と重なっています。")
+            spans.setdefault(p.clip, []).append((p.start, p.end))
+        total = sum(max(0.0, p.end - p.start) for p in e.pieces)
+        if total > budget * EDIT_OVER:
+            problems.append(f"使う部分の合計が {total:.0f} 秒で、目標（{budget:.0f} 秒）を大きくこえています。削ってください。")
+        for i, ins in enumerate(e.inserts):
+            d = durations.get(ins.clip)
+            if d is None:
+                problems.append(f"inserts[{i}] の clip「{ins.clip}」はありません。")
+                continue
+            if not (0 <= ins.start < ins.end <= d + 0.05):
+                problems.append(f"inserts[{i}] の時刻が「{ins.clip}」の範囲外です。")
+            if not (INSERT_MIN <= ins.end - ins.start <= INSERT_MAX):
+                problems.append(f"inserts[{i}] の長さは {INSERT_MIN:.0f}〜{INSERT_MAX:.0f} 秒にしてください。")
+            if not 0 <= ins.over_piece < len(e.pieces):
+                problems.append(f"inserts[{i}] の over_piece が pieces の範囲外です。")
+                continue
+            piece = e.pieces[ins.over_piece]
+            if piece.clip == ins.clip:
+                problems.append(f"inserts[{i}] は、重ねる部分と別のクリップにしてください。")
+            if not 0 <= ins.offset < max(0.01, piece.end - piece.start):
+                problems.append(f"inserts[{i}] の offset が、重ねる部分の長さをこえています。")
+        return problems
+
+    return check

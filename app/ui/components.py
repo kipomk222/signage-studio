@@ -39,6 +39,7 @@ def setup_page(title: str = "") -> None:
     ui.add_css(CSS)
     ui.page_title(f"{title}｜サイネージ動画メーカー" if title else "サイネージ動画メーカー")
     ui.colors(primary="#1f3a93")
+    ui.button.default_props("no-caps")  # 英字を勝手に大文字にしない
 
 
 def stage_url(pid: str, stage: Stage) -> str:
