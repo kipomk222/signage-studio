@@ -30,6 +30,16 @@ uv run python -m app.pipeline.run "D:\素材" --model EPC01A-20BK --out store,yo
 - 主なオプション: `--strength weak|normal|strong`（無音カットの強さ）、`--level small|medium|large`（BGM 音量）、
   `--fit pad|crop`（縦撮りを黒帯／切り抜き）、`--keep-all`（除外候補も使う）、`--target 150`（目標秒数）
 
+## 型番から商品調査と台本づくりを試す（段階3）
+
+```
+uv run python -m app.claude.check P1X9ADBL PC-S1355NAP-YC FMVU59L2BA
+```
+
+- Claude Code にログインしている必要があります（API キーは不要）
+- 調べた商品情報は `cache/products/` に保存され、2回目からは再利用されます（`--refresh` で調べ直し）
+- 結果はプロジェクトとして `projects/` に保存されます
+
 ## フォント
 
 `assets/fonts/` の6書体はすべて SIL Open Font License 1.1 で、同梱・商用利用が認められています。
