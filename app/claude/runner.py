@@ -76,7 +76,8 @@ def load_prompt(name: str, **values: str) -> str:
     return text
 
 
-def build_command(claude: str, schema: dict, tools: list[str]) -> list[str]:
+def build_command(claude: str, schema: dict, tools: list[str], system_file: Path | None = None) -> list[str]:
+    extra = ["--append-system-prompt-file", str(system_file)] if system_file else []
     return [
         claude, "-p",
         "--output-format", "json",
@@ -86,6 +87,7 @@ def build_command(claude: str, schema: dict, tools: list[str]) -> list[str]:
         "--no-session-persistence",
         "--strict-mcp-config",                # お手元の MCP サーバーは読み込まない
         "--setting-sources", "",             # お手元の設定・CLAUDE.md は読み込まない
+        *extra,                              # ツール専用の作業場所の指示書・メモリ・スキル
     ]
 
 
@@ -101,10 +103,12 @@ def _classify(text: str) -> tuple[str, str] | None:
 
 class ClaudeCode:
     def __init__(self, claude_path: str | None = None, runner: Runner = subprocess_runner,
-                 workdir: Path | None = None) -> None:
+                 workdir: Path | None = None, workspace=None) -> None:
+        from app.claude.workspace import WORKSPACE
         self.claude_path = claude_path
         self.runner = runner
         self.workdir = workdir
+        self.workspace = workspace if workspace is not None else WORKSPACE
 
     def _claude(self) -> str:
         path = self.claude_path or shutil.which("claude")
@@ -113,10 +117,14 @@ class ClaudeCode:
         return path
 
     def _once(self, prompt: str, schema: dict, tools: list[str], timeout: float,
-              files: list[Path] | None = None) -> dict:
-        cmd = build_command(self._claude(), schema, tools)
-        with tempfile.TemporaryDirectory(dir=self.workdir) as tmp:  # 作業フォルダは毎回空の一時フォルダ
-            for f in files or []:  # 読ませたいファイルだけを置く
+              files: list[Path] | None = None, kind: str = "") -> dict:
+        with tempfile.TemporaryDirectory(dir=self.workdir) as tmp, tempfile.TemporaryDirectory() as sysdir:
+            system_file = None
+            if self.workspace is not None:
+                system_file = Path(sysdir) / "system.md"
+                system_file.write_text(self.workspace.system_text(kind), encoding="utf-8")
+            cmd = build_command(self._claude(), schema, tools, system_file)
+            for f in files or []:  # 作業フォルダ（毎回空の一時フォルダ）には、読ませたいファイルだけを置く
                 shutil.copy2(f, Path(tmp) / Path(f).name)
             try:
                 proc = self.runner(cmd, prompt, Path(tmp), timeout)
@@ -129,6 +137,12 @@ class ClaudeCode:
         except json.JSONDecodeError:
             reason = _classify(proc.stdout + proc.stderr)
             raise ClaudeError(*(reason or FAILED), detail=(proc.stdout + proc.stderr)[-2000:])
+        if isinstance(payload, dict) and not payload.get("is_error"):
+            from app.claude.usage import record
+            try:
+                record(kind or "other", payload)
+            except OSError:
+                pass  # 記録できなくても処理は続ける
         if payload.get("is_error") or proc.returncode != 0:
             text = json.dumps(payload, ensure_ascii=False) + proc.stderr
             raise ClaudeError(*(_classify(text) or FAILED), detail=text[-2000:])
@@ -143,7 +157,8 @@ class ClaudeCode:
         return data
 
     def ask(self, prompt: str, model: type[M], tools: list[str] | None = None, timeout: float = 180,
-            check: Callable[[M], list[str]] | None = None, files: list[Path] | None = None) -> M:
+            check: Callable[[M], list[str]] | None = None, files: list[Path] | None = None,
+            kind: str = "") -> M:
         """依頼して、決めた形で受け取る。形式やルールに合わなければ1回だけ再依頼する。"""
         schema = model.model_json_schema()
         tools = tools or []
@@ -153,7 +168,7 @@ class ClaudeCode:
             if problems:
                 text += ("\n\n# 前回の出力の問題（必ず直してください）\n" + "\n".join(f"- {p}" for p in problems))
             try:
-                result = model.model_validate(self._once(text, schema, tools, timeout, files))
+                result = model.model_validate(self._once(text, schema, tools, timeout, files, kind))
                 problems = check(result) if check else []
             except _FormatProblem as exc:
                 problems = [str(exc)]

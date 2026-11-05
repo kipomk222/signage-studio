@@ -47,7 +47,10 @@ def stage_url(pid: str, stage: Stage) -> str:
     return f"/p/{pid}/{key}"
 
 
-def header(project: Project | None = None, current: Stage | None = None) -> None:
+def header(project: Project | None = None, current: Stage | None = None,
+           folder: Path | None = None, page: str = "") -> None:
+    """上部の帯。動画の画面（folder あり）では「Claude に相談」の欄も付ける。"""
+    holder: dict = {}
     with ui.header().classes("bg-white text-gray-900 shadow-sm"):
         with ui.row().classes("page items-center justify-between py-1"):
             with ui.row().classes("items-center gap-3 cursor-pointer").on("click", lambda: ui.navigate.to("/")):
@@ -64,6 +67,15 @@ def header(project: Project | None = None, current: Stage | None = None) -> None
                         if i < len(STEPS):
                             ui.icon("chevron_right").classes("text-gray-400")
                 ui.label(project.model_number).classes("font-mono text-gray-600")
+            with ui.row().classes("items-center gap-1"):
+                if project is not None and folder is not None:
+                    ui.button("Claude に相談", icon="forum", on_click=lambda: holder["drawer"].toggle()) \
+                        .props("outline dense")
+                ui.button(icon="settings", on_click=lambda: ui.navigate.to("/settings")) \
+                    .props("flat round color=grey").tooltip("設定（Claude のサインイン・使用量・メモリ）")
+    if project is not None and folder is not None:
+        from app.ui.chat import chat_drawer
+        holder["drawer"] = chat_drawer(folder, project.id, page)
 
 
 def stale_notice(project: Project, stage: Stage) -> None:

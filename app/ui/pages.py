@@ -181,7 +181,7 @@ async def plan_page(pid: str, research: int = 0) -> None:
     if not loaded:
         return
     project, folder = loaded
-    header(project, Stage.PLAN)
+    header(project, Stage.PLAN, folder, "plan")
 
     def persist(changed_plan: bool = True) -> None:
         if changed_plan:
@@ -380,7 +380,7 @@ async def material_page(pid: str) -> None:
     if not loaded:
         return
     project, folder = loaded
-    header(project, Stage.MATERIAL)
+    header(project, Stage.MATERIAL, folder, "material")
 
     def persist() -> None:
         project.mark_changed(Stage.MATERIAL)
@@ -507,7 +507,7 @@ async def review_page(pid: str) -> None:
     if not loaded:
         return
     project, folder = loaded
-    header(project, Stage.REVIEW)
+    header(project, Stage.REVIEW, folder, "review")
     style = project.settings.telop_style
 
     def persist() -> None:
@@ -757,7 +757,7 @@ async def export_page(pid: str) -> None:
     if not loaded:
         return
     project, folder = loaded
-    header(project, Stage.EXPORT)
+    header(project, Stage.EXPORT, folder, "export")
     out_dir = folder / "output"
 
     with ui.column().classes("page gap-5 p-6"):

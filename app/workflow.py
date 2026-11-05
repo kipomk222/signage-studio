@@ -67,6 +67,18 @@ class Services:
         return self.profile
 
 
+def _scoped(fn):
+    """この処理で使った Claude の量を、その動画（フォルダ）の分として記録する。"""
+    import functools
+    from app.claude.usage import usage_scope
+
+    @functools.wraps(fn)
+    def wrapper(folder, *args, **kwargs):
+        with usage_scope(Path(folder).name):
+            return fn(folder, *args, **kwargs)
+    return wrapper
+
+
 def _step(job: Job | None, fraction: float, message: str) -> None:
     if job is not None:
         job.step(fraction, message)
@@ -91,6 +103,7 @@ def _set_product(folder: Path, product, info) -> Project:
     return project
 
 
+@_scoped
 def research_product_into(folder: Path, services: Services, refresh: bool = False,
                           job: Job | None = None) -> Project:
     project = load_project(folder)
@@ -99,6 +112,7 @@ def research_product_into(folder: Path, services: Services, refresh: bool = Fals
     return _set_product(folder, product, info)
 
 
+@_scoped
 def product_from_page_into(folder: Path, services: Services, text: str = "",
                            images: list[Path] | None = None, job: Job | None = None) -> Project:
     project = load_project(folder)
@@ -107,6 +121,7 @@ def product_from_page_into(folder: Path, services: Services, text: str = "",
     return _set_product(folder, product, info)
 
 
+@_scoped
 def make_plan_into(folder: Path, services: Services, job: Job | None = None) -> Project:
     project = load_project(folder)
     if not project.product.name:
@@ -341,6 +356,7 @@ def ai_plan(project: Project, data: dict[str, ClipData], services: Services, fix
     )
 
 
+@_scoped
 def build_edit(folder: Path, services: Services, with_telops: bool = True, job: Job | None = None,
                ai: bool | None = None) -> EditResult:
     """素材から、設計図を作って編集する（画面の「編集を始める」）。"""
@@ -384,11 +400,13 @@ def build_edit(folder: Path, services: Services, with_telops: bool = True, job: 
     return render_edit(folder, services, with_telops=with_telops, job=job, result=res, data=data)
 
 
+@_scoped
 def replan_edit(folder: Path, services: Services, job: Job | None = None) -> EditResult:
     """Claude Code に編集を考え直してもらう（画面の「AIで編集し直す」）。"""
     return build_edit(folder, services, with_telops=True, job=job, ai=True)
 
 
+@_scoped
 def render_edit(folder: Path, services: Services, with_telops: bool = True, job: Job | None = None,
                 result: EditResult | None = None, data: dict[str, ClipData] | None = None) -> EditResult:
     """設計図どおりに動画を作り、テロップを付ける（画面で設計図を直したあとの「この内容で作り直す」も）。"""
@@ -581,6 +599,7 @@ def render_preview(folder: Path, services: Services, job: Job | None = None) -> 
     return out
 
 
+@_scoped
 def export_all(folder: Path, services: Services, outputs: list[str] | None = None,
                job: Job | None = None, notes: list[str] | None = None) -> list[ExportResult]:
     profile, project = services.prof(), _check_edit(folder)

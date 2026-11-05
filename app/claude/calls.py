@@ -74,7 +74,7 @@ def research_product(cc: ClaudeCode, model_number: str, cache_dir: Path = CACHE_
         return _to_product(model_number, info), info
 
     info = cc.ask(load_prompt("research", model_number=model_number), ProductInfo,
-                  tools=RESEARCH_TOOLS, timeout=RESEARCH_TIMEOUT, check=check_product)
+                  tools=RESEARCH_TOOLS, timeout=RESEARCH_TIMEOUT, check=check_product, kind="research")
     _save_cache(path, model_number, info, "web")
     return _to_product(model_number, info), info
 
@@ -117,7 +117,7 @@ def product_from_paste(cc: ClaudeCode, model_number: str, text: str = "", images
         prompt = load_prompt("extract", model_number=model_number, source="\n\n".join(parts))
         info = cc.ask(prompt, ProductInfo, tools=["Read"] if tiles else [], files=tiles,
                       timeout=RESEARCH_TIMEOUT if tiles else WRITE_TIMEOUT,
-                      check=lambda p: check_product(p, need_urls=False))
+                      check=lambda p: check_product(p, need_urls=False), kind="extract")
     info = tidy_pasted_sources(info)
     _save_cache(_cache_path(cache_dir, model_number), model_number, info, "paste")
     return _to_product(model_number, info), info
@@ -130,7 +130,7 @@ def make_plan(cc: ClaudeCode, product: Product, target_seconds: int, price: Pric
     budget = scenes_budget(target_seconds)
     prompt = load_prompt("plan", product=product_text(product), budget_seconds=f"{budget:.0f}",
                          price=price_text(price), extra=extra_text.strip() or "なし")
-    out = cc.ask(prompt, PlanOut, timeout=WRITE_TIMEOUT, check=make_plan_check(target_seconds))
+    out = cc.ask(prompt, PlanOut, timeout=WRITE_TIMEOUT, check=make_plan_check(target_seconds), kind="plan")
     return [Scene(id=f"s{i}", title=s.title, script=s.script, shots=s.shots, seconds=s.seconds)
             for i, s in enumerate(out.scenes, 1)]
 
@@ -148,7 +148,7 @@ def make_telops(cc: ClaudeCode, product: Product, scenes: list[Scene], transcrip
                          transcript=lines, duration=f"{duration:.1f}", price=price_text(price),
                          extra=extra_text.strip() or "なし", max_chars=str(TELOP_MAX_CHARS),
                          title_max=str(TITLE_MAX_CHARS))
-    out = cc.ask(prompt, TelopsOut, timeout=WRITE_TIMEOUT, check=make_telop_check(duration, product.model_number))
+    out = cc.ask(prompt, TelopsOut, timeout=WRITE_TIMEOUT, check=make_telop_check(duration, product.model_number), kind="telop")
     telops = [Telop(start=t.start, end=t.end, text=t.text) for t in sorted(out.telops, key=lambda t: t.start)]
     return out.title.strip(), telops
 
@@ -165,7 +165,7 @@ def merge_manual(new: list[Telop], old: list[Telop]) -> list[Telop]:
 def youtube_text(cc: ClaudeCode, product: Product, telops: list[Telop], price: Price) -> YoutubeOut:
     lines = "\n".join(f"{t.start:.0f}秒: {t.text.replace(chr(10), ' ')}" for t in telops) or "（なし）"
     prompt = load_prompt("youtube", product=product_text(product), telops=lines, price=price_text(price))
-    return cc.ask(prompt, YoutubeOut, timeout=WRITE_TIMEOUT, check=check_youtube)
+    return cc.ask(prompt, YoutubeOut, timeout=WRITE_TIMEOUT, check=check_youtube, kind="youtube")
 
 
 
@@ -204,4 +204,4 @@ def decide_edit(cc: ClaudeCode, product: Product, scenes: list[Scene], budget: f
                          sheets="\n".join(f"- {p.name}（{p.stem.removeprefix('sheet_')}）" for p in sheets) or "（なし）")
     check = make_edit_check({c.file: c.duration for c in clips}, {s.id for s in scenes}, budget)
     return cc.ask(prompt, AiEdit, tools=["Read"] if sheets else [], files=sheets, timeout=EDIT_TIMEOUT,
-                  check=check)
+                  check=check, kind="edit")

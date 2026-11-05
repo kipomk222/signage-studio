@@ -17,3 +17,9 @@ __pycache__/
 # OS
 .DS_Store
 Thumbs.db
+
+# Claude の作業場所の履歴（PCごと）
+claude_home/history/
+
+# Claude に覚えてもらったこと（PCごと）
+claude_home/memory.md

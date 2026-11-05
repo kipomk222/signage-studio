@@ -240,3 +240,31 @@ def make_edit_check(durations: dict[str, float], scene_ids: set[str], budget: fl
         return problems
 
     return check
+
+
+# --- 相談 ---------------------------------------------------------------------
+
+ConsultAction = Literal[
+    "scene_update", "scene_add", "scene_delete", "plan_settings",
+    "piece_update", "piece_move", "insert_update", "drop_restore",
+    "telop_update", "telop_add", "telop_delete", "title", "style", "bgm",
+]
+
+
+class ChangeField(_Strict):
+    name: str
+    value: str
+
+
+class ConsultChange(_Strict):
+    action: ConsultAction
+    index: int = -1
+    fields: list[ChangeField] = []
+    description: str          # 利用者に見せる「何をどう変えるか」
+
+
+class ConsultOut(_Strict):
+    reply: str
+    changes: list[ConsultChange] = []
+    remember: str = ""        # これからも守る好み（あれば）
+    next_step: Literal["rebuild", "preview", "none"] = "none"
