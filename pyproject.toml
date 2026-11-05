@@ -1,0 +1,19 @@
+[project]
+name = "signage-studio"
+version = "0.1.0"
+description = "店頭サイネージ動画の自動編集ツール"
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2.7",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.uv]
+package = false

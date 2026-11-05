@@ -1,0 +1,19 @@
+# 著作物・社内素材（各PCに直接置く）
+assets/bgm/*
+!assets/bgm/.gitkeep
+assets/logo/*
+!assets/logo/.gitkeep
+
+# 作成した動画と調査結果
+projects/
+cache/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+
+# OS
+.DS_Store
+Thumbs.db
