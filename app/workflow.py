@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import html
+import os
 import shutil
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -245,7 +246,9 @@ def _cached_json(path: Path, make):
         return json.loads(path.read_text(encoding="utf-8"))
     data = make()
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    part = path.with_name(path.name + ".part")
+    part.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    os.replace(part, path)
     return data
 
 
@@ -271,7 +274,9 @@ def prepare_analysis(folder: Path, services: Services, with_words: bool, tight: 
         norm = folder / "work" / "norm" / f"{stem}_{project.settings.fit}.mp4"
         if not norm.exists() or norm.stat().st_mtime < (src / c.file).stat().st_mtime:
             _step(job, frac(0.0), f"形式をそろえています（{i}/{len(use)}）")
-            normalize_clip(profile, probe_clip(profile, src / c.file), norm, fit=project.settings.fit)
+            part = norm.with_name(norm.stem + ".part.mp4")  # できあがってから名前を変える（途中で止めても壊れない）
+            normalize_clip(profile, probe_clip(profile, src / c.file), part, fit=project.settings.fit)
+            os.replace(part, norm)
         duration = duration_of(profile.ffprobe, norm)
         tag = f"{params.noise_db}_{params.min_silence}_{params.pad}"
         keeps = [tuple(r) for r in _cached_json(

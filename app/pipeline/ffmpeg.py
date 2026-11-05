@@ -26,10 +26,22 @@ def run(args: list[str], what: str, how: str = DEFAULT_HOW, timeout: float | Non
     try:
         result = run_process(args, timeout=timeout)  # 中止ボタンで止められる
     except subprocess.TimeoutExpired as exc:
+        _remove_partial(args)
         raise PipelineError(what, "時間がかかりすぎたため中止しました。もう一度お試しください。", str(exc)) from exc
+    except BaseException:  # 中止されたときも、書きかけのファイルを残さない
+        _remove_partial(args)
+        raise
     if result.returncode != 0:
+        _remove_partial(args)
         raise PipelineError(what, how, (result.stderr or "")[-4000:])
     return result
+
+
+def _remove_partial(args: list[str]) -> None:
+    """途中で止まった FFmpeg の書きかけの出力を消す（次回、壊れたファイルを使わないように）。"""
+    out = args[-1] if args else ""
+    if Path(args[0]).stem.startswith("ffmpeg") and out not in ("-", "") and not out.startswith("-"):
+        Path(out).unlink(missing_ok=True)
 
 
 def ffmpeg_base(ffmpeg: str) -> list[str]:

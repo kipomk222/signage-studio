@@ -52,3 +52,19 @@ def test_progress_and_check():
     job.cancel()
     with pytest.raises(Cancelled):
         job.step(0.5, "c")
+
+
+def test_cancel_leaves_no_half_written_video(tmp_path):
+    """中止したとき、FFmpeg の書きかけのファイルを残さない（次回それを使って失敗しないように）。"""
+    from app.pipeline.ffmpeg import PipelineError, run
+    out = tmp_path / "half.mp4"
+    job = Job()
+    args = ["ffmpeg", "-hide_banner", "-y", "-re", "-f", "lavfi", "-i", "testsrc2=d=20", "-c:v", "libx264",
+            "-preset", "ultrafast", str(out)]
+    threading.Timer(1.5, job.cancel).start()
+    with job.active(), pytest.raises(Cancelled):
+        run(args, what="テスト")
+    assert not out.exists()
+    with pytest.raises(PipelineError):
+        run(["ffmpeg", "-hide_banner", "-y", "-i", str(tmp_path / "ない.mp4"), str(out)], what="テスト")
+    assert not out.exists()

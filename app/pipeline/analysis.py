@@ -46,5 +46,7 @@ def contact_sheet(profile: PlatformProfile, video: Path, duration: float, dst: P
             draw.rectangle([x, y, x + 86, y + 30], fill=(0, 0, 0))
             draw.text((x + 6, y + 3), f"{t:.1f}秒", font=font, fill=(255, 220, 0))
     dst.parent.mkdir(parents=True, exist_ok=True)
-    sheet.save(dst, quality=85)
+    part = dst.with_name(dst.stem + ".part" + dst.suffix)
+    sheet.save(part, quality=85)
+    part.replace(dst)  # できあがってから名前を変える
     return dst
