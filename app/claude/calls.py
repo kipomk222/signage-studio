@@ -8,16 +8,19 @@ import tempfile
 from datetime import datetime
 from pathlib import Path
 
+from app.claude.images import IMAGE_EXTS, prepare_images
 from app.claude.runner import ROOT, ClaudeCode, load_prompt
+from app.errors import UserError
 from app.claude.schemas import (
     TELOP_MAX_CHARS, PlanOut, ProductInfo, TelopsOut, YoutubeOut,
-    check_product, check_youtube, make_plan_check, make_telop_check, scenes_budget,
+    check_product, check_youtube, tidy_pasted_sources, make_plan_check, make_telop_check, scenes_budget,
 )
 from app.project import Price, Product, Scene, Telop, safe_folder_part
 
 CACHE_DIR = ROOT / "cache" / "products"
 RESEARCH_TOOLS = ["WebSearch", "WebFetch"]
 RESEARCH_TIMEOUT = 420
+PASTE_MAX_CHARS = 60_000
 WRITE_TIMEOUT = 240
 
 
@@ -69,14 +72,51 @@ def research_product(cc: ClaudeCode, model_number: str, cache_dir: Path = CACHE_
 
     info = cc.ask(load_prompt("research", model_number=model_number), ProductInfo,
                   tools=RESEARCH_TOOLS, timeout=RESEARCH_TIMEOUT, check=check_product)
-    if info.found:  # 見つからなかった結果は保存しない（次回また調べる）
-        path.parent.mkdir(parents=True, exist_ok=True)
-        payload = {"model_number": model_number, "saved_at": datetime.now().isoformat(timespec="seconds"),
-                   "info": info.model_dump()}
-        fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(payload, f, ensure_ascii=False, indent=2)
-        os.replace(tmp, path)
+    _save_cache(path, model_number, info, "web")
+    return _to_product(model_number, info), info
+
+
+def _save_cache(path: Path, model_number: str, info: ProductInfo, method: str) -> None:
+    if not info.found:  # 見つからなかった結果は保存しない（次回また調べる）
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {"model_number": model_number, "saved_at": datetime.now().isoformat(timespec="seconds"),
+               "method": method, "info": info.model_dump()}
+    fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, path)
+
+
+def product_from_paste(cc: ClaudeCode, model_number: str, text: str = "", images: list[Path] | None = None,
+                       cache_dir: Path = CACHE_DIR) -> tuple[Product, ProductInfo]:
+    """商品ページから貼り付けた文章・スクリーンショットから商品情報を整理する（Web は使わない）。"""
+    model_number = model_number.strip()
+    text = text.strip()
+    images = [Path(p) for p in images or []]
+    if not text and not images:
+        raise UserError("商品ページの内容が入っていません。",
+                        "商品ページの文章を貼り付けるか、スクリーンショットを入れてください。")
+    if bad := [p.name for p in images if p.suffix.lower() not in IMAGE_EXTS]:
+        raise UserError(f"「{'、'.join(bad)}」は画像として読めません。", "PNG か JPEG の画像を入れてください。")
+    if len(text) > PASTE_MAX_CHARS:
+        text = text[:PASTE_MAX_CHARS]
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tiles = prepare_images(images, Path(tmp)) if images else []
+        parts = []
+        if text:
+            parts.append("## 貼り付けた文章\n<<<\n" + text + "\n>>>")
+        if tiles:
+            names = "\n".join(f"- {t.name}" for t in tiles)
+            parts.append("## スクリーンショット\n作業フォルダにある次の画像を、上から順にすべて Read で開いて読んでください"
+                         "（1枚の縦長の画面を、少し重ねて分割したものです）。\n" + names)
+        prompt = load_prompt("extract", model_number=model_number, source="\n\n".join(parts))
+        info = cc.ask(prompt, ProductInfo, tools=["Read"] if tiles else [], files=tiles,
+                      timeout=RESEARCH_TIMEOUT if tiles else WRITE_TIMEOUT,
+                      check=lambda p: check_product(p, need_urls=False))
+    info = tidy_pasted_sources(info)
+    _save_cache(_cache_path(cache_dir, model_number), model_number, info, "paste")
     return _to_product(model_number, info), info
 
 

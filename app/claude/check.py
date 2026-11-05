@@ -2,6 +2,10 @@
 
 使い方:
     uv run python -m app.claude.check P1X9ADBL PC-S1355NAP-YC FMVU59L2BA [--target 150] [--refresh]
+
+Web で調べられないときは、商品ページの文章やスクリーンショットから:
+    uv run python -m app.claude.check P1X9ADBL --paste ページ.txt
+    uv run python -m app.claude.check P1X9ADBL --image スクショ.jpg
 """
 
 from __future__ import annotations
@@ -10,8 +14,9 @@ import argparse
 import sys
 from pathlib import Path
 
-from app.claude.calls import make_plan, research_product
-from app.claude.runner import ClaudeCode, ClaudeError
+from app.claude.calls import make_plan, product_from_paste, research_product
+from app.claude.runner import ClaudeCode
+from app.errors import UserError
 from app.project import Price, create_project, save_project
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -43,16 +48,27 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("models", nargs="+", help="型番（複数可）")
     ap.add_argument("--target", type=int, default=150, help="目標の長さ（秒）")
     ap.add_argument("--refresh", action="store_true", help="保存済みの調査結果を使わず調べ直す")
+    ap.add_argument("--paste", type=Path, help="商品ページから写した文章のファイル（型番1つのとき）")
+    ap.add_argument("--image", type=Path, nargs="+", help="商品ページのスクリーンショット（型番1つのとき）")
     ap.add_argument("--projects", type=Path, default=ROOT / "projects")
     args = ap.parse_args(argv)
+    from_page = bool(args.paste or args.image)
+    if from_page and len(args.models) != 1:
+        print("--paste / --image を使うときは、型番を1つだけ指定してください。")
+        return 2
 
     cc = ClaudeCode()
     ok = 0
     for model in args.models:
         print(f"\n===== {model} =====")
         try:
-            print("商品を調べています（1〜5分ほどかかります）")
-            product, info = research_product(cc, model, refresh=args.refresh)
+            if from_page:
+                print("商品ページの内容から整理しています")
+                text = args.paste.read_text(encoding="utf-8") if args.paste else ""
+                product, info = product_from_paste(cc, model, text=text, images=args.image)
+            else:
+                print("商品を調べています（1〜5分ほどかかります）")
+                product, info = research_product(cc, model, refresh=args.refresh)
             if not info.found:
                 print(f"  商品を特定できませんでした。\n  メモ: {info.note}")
                 continue
@@ -60,7 +76,7 @@ def main(argv: list[str] | None = None) -> int:
             print("台本と構成を作っています")
             scenes = make_plan(cc, product, args.target, Price())
             show_plan(scenes)
-        except ClaudeError as e:
+        except UserError as e:
             print(f"  {e.what}\n  {e.how}")
             continue
         project, folder = create_project(args.projects, model)

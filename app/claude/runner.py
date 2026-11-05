@@ -112,9 +112,12 @@ class ClaudeCode:
             raise ClaudeError(*NOT_FOUND)
         return path
 
-    def _once(self, prompt: str, schema: dict, tools: list[str], timeout: float) -> dict:
+    def _once(self, prompt: str, schema: dict, tools: list[str], timeout: float,
+              files: list[Path] | None = None) -> dict:
         cmd = build_command(self._claude(), schema, tools)
         with tempfile.TemporaryDirectory(dir=self.workdir) as tmp:  # 作業フォルダは毎回空の一時フォルダ
+            for f in files or []:  # 読ませたいファイルだけを置く
+                shutil.copy2(f, Path(tmp) / Path(f).name)
             try:
                 proc = self.runner(cmd, prompt, Path(tmp), timeout)
             except FileNotFoundError as exc:
@@ -140,7 +143,7 @@ class ClaudeCode:
         return data
 
     def ask(self, prompt: str, model: type[M], tools: list[str] | None = None, timeout: float = 180,
-            check: Callable[[M], list[str]] | None = None) -> M:
+            check: Callable[[M], list[str]] | None = None, files: list[Path] | None = None) -> M:
         """依頼して、決めた形で受け取る。形式やルールに合わなければ1回だけ再依頼する。"""
         schema = model.model_json_schema()
         tools = tools or []
@@ -150,7 +153,7 @@ class ClaudeCode:
             if problems:
                 text += ("\n\n# 前回の出力の問題（必ず直してください）\n" + "\n".join(f"- {p}" for p in problems))
             try:
-                result = model.model_validate(self._once(text, schema, tools, timeout))
+                result = model.model_validate(self._once(text, schema, tools, timeout, files))
                 problems = check(result) if check else []
             except _FormatProblem as exc:
                 problems = [str(exc)]

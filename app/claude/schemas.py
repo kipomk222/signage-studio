@@ -10,6 +10,7 @@ TELOP_MAX_CHARS = 20
 TELOP_MAX_LINES = 2
 TITLE_SECONDS, END_CARD_SECONDS = 3, 5  # 冒頭タイトルとエンドカードは台本の外
 PLAN_TOLERANCE = 0.15
+PASTED = "貼り付け"  # 商品ページから貼り付けた内容が根拠のとき
 
 Category = Literal["パソコン", "キッチン家電", "生活家電", "AV機器", "カメラ", "スマホ・タブレット", "その他"]
 
@@ -36,7 +37,7 @@ class ProductInfo(_Strict):
     note: str            # 不確かな点など
 
 
-def check_product(p: ProductInfo) -> list[str]:
+def check_product(p: ProductInfo, need_urls: bool = True) -> list[str]:
     if not p.found:
         return []
     problems = []
@@ -44,11 +45,17 @@ def check_product(p: ProductInfo) -> list[str]:
         problems.append(f"features は3〜5点にしてください（今は{len(p.features)}点）。")
     if len(p.specs) < 3:
         problems.append("specs は主な仕様を3つ以上入れてください。")
-    if not p.sources or not all(s.startswith(("http://", "https://")) for s in p.sources):
+    if need_urls and (not p.sources or not all(s.startswith(("http://", "https://")) for s in p.sources)):
         problems.append("sources には実際に参照したページの URL を入れてください。")
     if not p.name.strip() or not p.maker.strip():
         problems.append("name と maker を入れてください。")
     return problems
+
+
+def tidy_pasted_sources(p: ProductInfo) -> ProductInfo:
+    """貼り付けが根拠のときは、URL として正しいものだけ残し、なければ「貼り付け」とする。"""
+    urls = [s for s in p.sources if s.startswith(("http://", "https://"))]
+    return p.model_copy(update={"sources": urls or [PASTED]})
 
 
 # --- 企画 -----------------------------------------------------------------

@@ -199,3 +199,61 @@ def test_prompts_have_no_unfilled_placeholders(tmp_path):
     calls.youtube_text(cc, p, [], Price())
     for _cmd, stdin, _cwd in fake.calls:
         assert "{{" not in stdin
+
+
+# --- 商品ページの貼り付け -------------------------------------------------------
+
+FIXTURES = Path(__file__).parent / "fixtures"
+
+
+def test_paste_text_without_web(tmp_path):
+    pasted = {**PRODUCT, "sources": ["www.yodobashi.com"]}  # 正しくない URL は「貼り付け」に置き換える
+    fake = FakeClaude(pasted)
+    text = (FIXTURES / "yodobashi_P1X9ADBL.txt").read_text(encoding="utf-8")
+    product, info = calls.product_from_paste(cc_with(fake), "P1X9ADBL", text=text, cache_dir=tmp_path)
+    cmd, stdin, _ = fake.calls[0]
+    assert cmd[cmd.index("--tools") + 1] == ""  # Web もファイルも使わせない
+    assert "Core Ultra 7 ※355" in stdin and "別の型番の商品の仕様を混ぜない" in stdin
+    assert product.sources == ["貼り付け"]
+    saved = json.loads((tmp_path / "P1X9ADBL.json").read_text(encoding="utf-8"))
+    assert saved["method"] == "paste"
+
+
+def test_paste_screenshot_is_split_and_readable(tmp_path):
+    from PIL import Image
+    shot = tmp_path / "long.jpg"
+    Image.new("RGB", (1080, 4000), "white").save(shot)
+    fake = FakeClaude(PRODUCT)
+    calls.product_from_paste(cc_with(fake), "P1X9ADBL", images=[shot], cache_dir=tmp_path / "c")
+    cmd, stdin, cwd = fake.calls[0]
+    assert cmd[cmd.index("--tools") + 1] == "Read"
+    assert "page1_01.png" in stdin and "page1_03.png" in stdin
+
+
+def test_too_small_screenshot_is_rejected(tmp_path):
+    from PIL import Image
+    from app.errors import UserError
+    shot = tmp_path / "shrunk.jpg"
+    Image.new("RGB", (246, 2576), "white").save(shot)  # LINE などで縮小された縦長スクショ
+    with pytest.raises(UserError) as e:
+        calls.product_from_paste(cc_with(FakeClaude()), "X", images=[shot], cache_dir=tmp_path)
+    assert "小さすぎ" in e.value.what and "元の画像" in e.value.how
+
+
+def test_split_tiles_overlap():
+    from PIL import Image
+    from app.claude.images import OVERLAP, TILE_HEIGHT, split_image
+    import tempfile
+    d = Path(tempfile.mkdtemp())
+    Image.new("RGB", (2160, 6000), "white").save(d / "big.png")  # 横2160 → 1000に縮小、高さ約2778
+    tiles = split_image(d / "big.png", d, "p")
+    sizes = [Image.open(t).size for t in tiles]
+    assert all(w == 1000 for w, _ in sizes)
+    assert sum(h for _, h in sizes) - OVERLAP * (len(tiles) - 1) == pytest.approx(2778, abs=2)
+    assert max(h for _, h in sizes) <= TILE_HEIGHT
+
+
+def test_paste_needs_something(tmp_path):
+    from app.errors import UserError
+    with pytest.raises(UserError):
+        calls.product_from_paste(cc_with(FakeClaude()), "X", cache_dir=tmp_path)
