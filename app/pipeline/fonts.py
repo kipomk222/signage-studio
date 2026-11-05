@@ -49,8 +49,13 @@ MODEL_LIKE = re.compile(r"(?=[A-Za-z0-9\-]*[A-Za-z])(?=[A-Za-z0-9\-]*\d)[A-Za-z0
 DIGITS = re.compile(r"\d")
 
 
+def plain_text(text: str) -> str:
+    """強調の印（**）を外した、画面に出る文字だけ。"""
+    return text.replace("**", "")
+
+
 def char_count(text: str) -> int:
-    return len(text.replace("\n", ""))
+    return len(plain_text(text).replace("\n", ""))
 
 
 def has_model_number(text: str, model_number: str = "") -> bool:
@@ -86,7 +91,7 @@ def visual_width(line: str) -> float:
 
 def font_size(text: str, max_width_px: int = 1700, role: str = "telop") -> int:
     """長いほど小さく。1080p の画面に収まる大きさにする。"""
-    longest = max((visual_width(l) for l in text.split("\n")), default=1) or 1
+    longest = max((visual_width(l) for l in plain_text(text).split("\n")), default=1) or 1
     if role == "title":
         base = 120 if longest <= 8 else 104 if longest <= 12 else 88
     elif role == "subtitle":

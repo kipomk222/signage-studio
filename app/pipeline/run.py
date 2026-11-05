@@ -30,7 +30,9 @@ from app.pipeline.inventory import ClipInfo, scan_folder
 from app.pipeline.normalize import normalize_clip
 from app.pipeline.silence import STRENGTH, TIGHTEST_MIN_SILENCE, CutResult, jumpcut
 from app.platform import PlatformProfile, get_profile
-from app.project import Clip, Price, Product, Scene, Stage, Telop, create_project, save_project
+from app.project import (
+    Clip, Price, Product, Project, Scene, Stage, Telop, TelopStyle, create_project, load_project, save_project,
+)
 
 ROOT = Path(__file__).resolve().parents[2]
 MIN_USABLE = 2 * FADE + 0.2  # これより短く残ったクリップはつなぎ目に収まらないので使わない
@@ -49,6 +51,7 @@ class TelopInputs:
     claude: ClaudeCode | None = None
     transcriber: Transcriber | None = None
     logo: Path | None = None
+    style: TelopStyle | None = None  # テロップの色（省略時は白文字・黒縁・黄色の強調）
 
 
 @dataclass
@@ -190,17 +193,10 @@ def edit_folder(
         title, new = make_telops(telop.claude or ClaudeCode(), product, telop.scenes, transcript,
                                  joined_seconds, telop.price, telop.extra_text)
         telops = merge_manual(new, project.telops)
-        ass = build_telop_ass(telops, work / "telops.ass", product.category, product.model_number)
-        with_telops = burn_ass(profile, joined, ass, work / "telops.mp4")
-        logo = telop.logo or find_logo()
-        if logo is None:
-            notes.append("ロゴが見つからなかったため、エンドカードは仮の無地にしました。assets/logo にロゴを入れると使われます。")
-        title_card = make_title_card(profile, joined, title, product.model_number, work / "title.mp4",
-                                     product.category, product.model_number)
-        end_card = make_end_card(profile, work / "end.mp4", logo)
-        main_video = work / "with_cards.mp4"
-        concat_clips(profile, [title_card, with_telops, end_card], main_video)
         project.title, project.telops = title, telops
+        if telop.style:
+            project.settings.telop_style = telop.style
+        main_video = render_telop_video(profile, project, folder, telop.logo, notes)
 
     say("BGM を重ねています")
     if bgm_path is None:
@@ -208,6 +204,10 @@ def edit_folder(
         bgm_path = found[0] if found else None
     if bgm_path is None:
         notes.append("BGM が見つからなかったため、BGM なしで書き出しました。assets/bgm に曲を入れると使われます。")
+    else:  # 色だけ変えて作り直すときにも同じ曲を使えるよう、プロジェクトに控えておく
+        for old in work.glob("bgm.*"):
+            old.unlink()
+        shutil.copy2(bgm_path, work / f"bgm{bgm_path.suffix.lower()}")
     mixed = bgm_step.mix_bgm(profile, main_video, bgm_path, work / "mixed.mp4", level=level)
 
     say("書き出しています")
@@ -237,6 +237,62 @@ def edit_folder(
     return report
 
 
+def render_telop_video(profile: PlatformProfile, project: Project, folder: Path,
+                       logo: Path | None = None, notes: list[str] | None = None) -> Path:
+    """つないだ動画にテロップを入れ、冒頭タイトルとエンドカードを付ける。"""
+    work = folder / "work"
+    joined = work / "joined.mp4"
+    p, style = project.product, project.settings.telop_style
+    ass = build_telop_ass(project.telops, work / "telops.ass", p.category, p.model_number, style)
+    with_telops = burn_ass(profile, joined, ass, work / "telops.mp4")
+    logo = logo or find_logo()
+    if logo is None and notes is not None:
+        notes.append("ロゴが見つからなかったため、エンドカードは仮の無地にしました。assets/logo にロゴを入れると使われます。")
+    title_card = make_title_card(profile, joined, project.title, p.model_number, work / "title.mp4",
+                                 p.category, p.model_number, style)
+    end_card = make_end_card(profile, work / "end.mp4", logo)
+    main_video = work / "with_cards.mp4"
+    concat_clips(profile, [title_card, with_telops, end_card], main_video)
+    return main_video
+
+
+def rerender(project_dir: Path, style: TelopStyle | None = None, outputs: list[str] | None = None,
+             profile: PlatformProfile | None = None, progress: Progress = print) -> list[ExportResult]:
+    """テロップの色や文言を直したあと、編集し直さずに書き出しだけやり直す。
+
+    文字起こしやテロップ作りはやり直さない（project.json のテロップをそのまま使う）。
+    """
+    profile = profile or get_profile()
+    folder = Path(project_dir)
+    project = load_project(folder)
+    work, out = folder / "work", folder / "output"
+    if not (work / "joined.mp4").exists() or not project.telops:
+        raise UserError("作り直せる編集結果が見つかりません。",
+                        "一度、素材フォルダから完成動画まで作ってから、お試しください。")
+    if style:
+        project.settings.telop_style = style
+    outputs = outputs or list(project.settings.outputs)
+    progress("[1/3] テロップを入れ直しています")
+    main_video = render_telop_video(profile, project, folder)
+    progress("[2/3] BGM を重ねています")
+    bgm = next(iter(sorted(work.glob("bgm.*"))), None)
+    mixed = bgm_step.mix_bgm(profile, main_video, bgm, work / "mixed.mp4", level=project.settings.bgm_level)
+    progress("[3/3] 書き出しています")
+    exports = [export_video(profile, mixed, out, folder.name, key) for key in outputs]
+    project.settings.outputs = outputs  # type: ignore[assignment]
+    save_project(folder, project)
+    return exports
+
+
+def style_from_args(args, base: TelopStyle | None = None) -> TelopStyle | None:
+    """コマンドの色の指定を TelopStyle にする。何も指定がなければ None。"""
+    given = {k: getattr(args, k) for k in ("text_color", "outline_color", "emphasis_color", "band_color",
+                                           "band_opacity") if getattr(args, k) is not None}
+    if not given:
+        return None
+    return TelopStyle.model_validate({**(base or TelopStyle()).model_dump(), **given})
+
+
 def parse_price(text: str) -> Price:
     if text in ("hidden", ""):
         return Price()
@@ -263,13 +319,16 @@ def prepare_telop(args) -> TelopInputs:
     if not info.found:
         raise UserError("商品情報が見つかりませんでした。",
                         "--paste で商品ページの文章を渡すか、--no-telop でテロップなしにしてください。")
-    return TelopInputs(product=product, price=parse_price(args.price), extra_text=args.extra, claude=cc)
+    return TelopInputs(product=product, price=parse_price(args.price), extra_text=args.extra, claude=cc,
+                       style=style_from_args(args))
 
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="素材フォルダから完成動画を作ります。")
-    ap.add_argument("folder", type=Path, help="スマホで撮った動画が入ったフォルダ")
-    ap.add_argument("--model", required=True, help="型番（プロジェクト名に使います）")
+    ap.add_argument("folder", type=Path, nargs="?", help="スマホで撮った動画が入ったフォルダ")
+    ap.add_argument("--model", help="型番（プロジェクト名に使います）")
+    ap.add_argument("--rerender", type=Path, metavar="プロジェクトのフォルダ",
+                    help="色やテロップを直したあと、書き出しだけやり直す")
     ap.add_argument("--bgm", type=Path, help="BGM ファイル（省略時は assets/bgm の最初の曲）")
     ap.add_argument("--out", default="store", help="store（店頭用）, youtube をカンマ区切りで")
     ap.add_argument("--strength", choices=list(STRENGTH), default="normal", help="無音カットの強さ")
@@ -283,13 +342,33 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--image", type=Path, nargs="+", help="商品ページのスクリーンショット")
     ap.add_argument("--price", default="hidden", help="価格: hidden（表示しない）/ open（オープン価格）/ 金額（例 248780）")
     ap.add_argument("--extra", default="", help="追加で入れたい情報（例「展示品あり」）")
+    colors = ap.add_argument_group("テロップの色（カラーコード）")
+    colors.add_argument("--text-color", help="文字の色（標準 #FFFFFF）")
+    colors.add_argument("--outline-color", help="縁取りの色（標準 #000000）")
+    colors.add_argument("--emphasis-color", help="**強調** した言葉の色（標準 #FFD400）")
+    colors.add_argument("--band-color", help="文字の後ろに敷く帯の色（標準はなし。\"\" で帯を消す）")
+    colors.add_argument("--band-opacity", type=float, help="帯の濃さ 0〜1（標準 0.6）")
     args = ap.parse_args(argv)
 
     outputs = [o.strip() for o in args.out.split(",") if o.strip()]
     if unknown := [o for o in outputs if o not in TARGETS]:
         print(f"書き出し先「{'、'.join(unknown)}」は使えません。store か youtube を指定してください。")
         return 2
+    if args.rerender:
+        try:
+            base = load_project(args.rerender).settings.telop_style
+            exports = rerender(args.rerender, style_from_args(args, base), outputs)
+        except UserError as e:
+            print(f"\n{e.what}\n{e.how}")
+            return 1
+        print("\n" + "\n".join(e.summary() for e in exports))
+        print(f"\n完成した動画: {args.rerender / 'output'}")
+        return 0
+    if args.folder is None or not args.model:
+        print("素材フォルダと --model（型番）を指定してください。")
+        return 2
     try:
+        style_from_args(args)  # 色の指定の間違いは、時間のかかる処理の前に知らせる
         if not args.folder.is_dir():  # 商品情報を調べる前に確かめる
             raise UserError("素材フォルダが見つかりません。", "フォルダの場所を確認してください。")
         telop = None if args.no_telop else prepare_telop(args)

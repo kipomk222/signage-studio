@@ -222,3 +222,54 @@ def test_edit_folder_with_telops(profile, samples, bgm_file, tmp_path):
     assert project.product.model_number == "FMVU59L2BA" and project.plan.price.mode == "open"
     assert any("ロゴが見つからなかった" in n for n in report.notes)
     assert "■ テロップ（2枚）" in report.text()
+
+
+def test_rerender_changes_colors_without_reediting(profile, samples, bgm_file, tmp_path):
+    """色だけ変えて書き出し直す（文字起こし・テロップ作りはやり直さない）。"""
+    import json as _json
+    from app.claude.runner import ClaudeCode, ProcResult
+    from app.errors import UserError
+    from app.pipeline.run import TelopInputs, rerender
+    from app.project import Product, TelopStyle, save_project
+    from tests.media import ScriptedTranscriber
+
+    calls = []
+
+    def fake_claude(cmd, stdin, cwd, timeout):
+        calls.append(1)
+        out = {"title": "NOTE U", "telops": [{"start": 0.3, "end": 2.5, "text": "約**908g**の軽さ"}]}
+        return ProcResult(0, _json.dumps({"is_error": False, "structured_output": out}), "")
+
+    folder, _ = samples
+    report = edit_folder(folder, "FMVU59L2BA", projects_root=tmp_path, bgm_path=bgm_file, profile=profile,
+                         progress=_quiet,
+                         telop=TelopInputs(product=Product(model_number="FMVU59L2BA", name="NOTE U"),
+                                           claude=ClaudeCode(claude_path="claude", runner=fake_claude),
+                                           transcriber=ScriptedTranscriber(["こんにちは"]),
+                                           style=TelopStyle(emphasis_color="#FF0000")))
+    pdir = report.project_dir
+    assert "\\c&H0000FF&}908g" in (pdir / "work" / "telops.ass").read_text(encoding="utf-8-sig")
+    assert load_project(pdir).settings.telop_style.emphasis_color == "#FF0000"
+
+    # 手でテロップを直し、色も変えて作り直す
+    project = load_project(pdir)
+    project.telops[0].text = "**約908g**で軽い"
+    project.telops[0].manual = True
+    save_project(pdir, project)
+    exports = rerender(pdir, TelopStyle(emphasis_color="#00A0E9", band_color="#000000"),
+                       profile=profile, progress=_quiet)
+    ass = (pdir / "work" / "telops.ass").read_text(encoding="utf-8-sig")
+    assert "\\c&HE9A000&}約908g" in ass and "Style: band_" in ass
+    assert len(calls) == 1                                   # Claude は呼び直していない
+    assert exports[0].path.exists() and exports[0].duration == pytest.approx(report.exports[0].duration, abs=0.3)
+    saved = load_project(pdir)
+    assert saved.settings.telop_style.band_color == "#000000" and saved.telops[0].manual
+
+    with pytest.raises(UserError):
+        rerender(tmp_path / "ない", profile=profile)
+
+
+def test_cli_color_errors_come_first(tmp_path, capsys):
+    assert main([str(tmp_path), "--model", "X-1", "--emphasis-color", "きいろ"]) == 1
+    out = capsys.readouterr().out
+    assert "読み取れません" in out and "#FFD400" in out

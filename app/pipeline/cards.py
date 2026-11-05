@@ -12,6 +12,7 @@ from app.pipeline.ffmpeg import ffmpeg_base, run
 from app.pipeline.fonts import FONTS_DIR, choose_font, font_size
 from app.pipeline.normalize import AUDIO_ARGS, FPS, HEIGHT, SAMPLE_RATE, WIDTH
 from app.pipeline.telop_render import EVENTS, HEADER, dialogue, style_line
+from app.project import TelopStyle
 from app.platform import PlatformProfile, ffmpeg_filter_path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -31,25 +32,30 @@ def _silence() -> list[str]:
     return ["-f", "lavfi", "-i", f"anullsrc=r={SAMPLE_RATE}:cl=stereo"]
 
 
-def build_title_ass(path: Path, title: str, subtitle: str, category: str, model_number: str) -> Path:
+def build_title_ass(path: Path, title: str, subtitle: str, category: str, model_number: str,
+                    style: TelopStyle | None = None) -> Path:
+    style = style or TelopStyle()
+    colors = (style.text_color, style.outline_color, style.emphasis_color)
     t_font = choose_font(title, "title", category, model_number)
     s_font = choose_font(subtitle, "subtitle", category, model_number)
     t_size, s_size = font_size(title, role="title"), font_size(subtitle, role="subtitle")
     lines = [HEADER,
-             style_line(t_font, t_size, align=5, margin_v=0, outline=8),
-             style_line(s_font, s_size, align=5, margin_v=0, outline=5), EVENTS]
+             style_line(t_font, t_size, align=5, margin_v=0, outline=8, style=style, name="title"),
+             style_line(s_font, s_size, align=5, margin_v=0, outline=5, style=style, name="subtitle"), EVENTS]
     cy = HEIGHT // 2
-    lines.append(dialogue(0, TITLE_SECONDS, t_font, title, t_size, f"\\pos({WIDTH // 2},{cy - 30})"))
+    lines.append(dialogue(0, TITLE_SECONDS, "title", title, t_size, f"\\pos({WIDTH // 2},{cy - 30})",
+                          font_id=t_font, colors=colors))
     if subtitle:
-        lines.append(dialogue(0, TITLE_SECONDS, s_font, subtitle, s_size,
-                              f"\\pos({WIDTH // 2},{cy + t_size // 2 + 40})"))
+        lines.append(dialogue(0, TITLE_SECONDS, "subtitle", subtitle, s_size,
+                              f"\\pos({WIDTH // 2},{cy + t_size // 2 + 40})", font_id=s_font, colors=colors))
     path.write_text("".join(lines), encoding="utf-8-sig")
     return path
 
 
 def make_title_card(profile: PlatformProfile, main_video: Path, title: str, subtitle: str,
-                    dst: Path, category: str = "", model_number: str = "") -> Path:
-    ass = build_title_ass(dst.with_suffix(".ass"), title, subtitle, category, model_number)
+                    dst: Path, category: str = "", model_number: str = "",
+                    style: TelopStyle | None = None) -> Path:
+    ass = build_title_ass(dst.with_suffix(".ass"), title, subtitle, category, model_number, style)
     vf = (f"boxblur=24:2,eq=brightness=-0.28:saturation=0.8,"
           f"ass={ffmpeg_filter_path(ass)}:fontsdir={ffmpeg_filter_path(FONTS_DIR)},"
           f"fps={FPS},format=yuv420p")

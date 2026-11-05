@@ -16,9 +16,10 @@ from enum import Enum
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from app.errors import UserError
+from app.pipeline.colors import normalize_color
 
 SCHEMA_VERSION = 1
 PROJECT_FILE = "project.json"
@@ -104,9 +105,36 @@ class Clip(BaseModel):
 class Telop(BaseModel):
     start: float
     end: float
-    text: str
+    text: str  # **ことば** で囲んだ部分は強調色になる
     font: str = ""
     manual: bool = False  # 手で直したテロップ。再作成しても消さない
+    # このテロップだけ色を変えるとき（空なら全体の設定を使う）
+    text_color: str = ""
+    outline_color: str = ""
+    emphasis_color: str = ""
+
+    _colors = field_validator("text_color", "outline_color", "emphasis_color")(
+        classmethod(lambda cls, v: normalize_color(v)))
+
+
+class TelopStyle(BaseModel):
+    """テロップ全体の色。カラーコード（#RRGGBB）で指定する。"""
+
+    text_color: str = "#FFFFFF"       # 文字
+    outline_color: str = "#000000"    # 縁取り
+    emphasis_color: str = "#FFD400"   # **強調** した言葉
+    band_color: str = ""              # 文字の後ろの帯（空なら帯なし）
+    band_opacity: float = Field(0.6, ge=0, le=1)
+
+    _colors = field_validator("text_color", "outline_color", "emphasis_color", "band_color")(
+        classmethod(lambda cls, v: normalize_color(v)))
+
+    @field_validator("text_color", "outline_color", "emphasis_color")
+    @classmethod
+    def _required(cls, v: str) -> str:
+        if not v:
+            raise UserError("文字・縁取り・強調の色は空にできません。", "「#FFFFFF」のようにカラーコードを入れてください。")
+        return v
 
 
 class Settings(BaseModel):
@@ -114,6 +142,7 @@ class Settings(BaseModel):
     bgm_level: Literal["small", "medium", "large"] = "medium"
     silence_strength: Literal["weak", "normal", "strong"] = "normal"
     outputs: list[Literal["store", "youtube"]] = Field(default_factory=lambda: ["store"])
+    telop_style: TelopStyle = Field(default_factory=TelopStyle)
 
 
 class HistoryEntry(BaseModel):

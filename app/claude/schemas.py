@@ -111,7 +111,7 @@ TITLE_MAX_CHARS = 14
 
 
 def telop_length(text: str) -> int:
-    return len(text.replace("\n", ""))
+    return len(text.replace("**", "").replace("\n", ""))
 
 
 def make_telop_check(duration: float, model_number: str = ""):
@@ -127,6 +127,8 @@ def make_telop_check(duration: float, model_number: str = ""):
         prev_end = 0.0
         for i, x in enumerate(sorted(t.telops, key=lambda x: x.start), 1):
             lines = x.text.split("\n")
+            if x.text.count("**") % 2:
+                problems.append(f"{i}つ目「{x.text}」の ** が閉じていません。")
             if telop_length(x.text) > TELOP_MAX_CHARS:
                 problems.append(f"{i}つ目「{x.text}」が {TELOP_MAX_CHARS} 文字を超えています。")
             if len(lines) > TELOP_MAX_LINES:

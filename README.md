@@ -31,6 +31,16 @@ uv run python -m app.pipeline.run "D:\素材" --model EPC01A-20BK --out store,yo
   - `--no-telop` でテロップなし（段階2と同じ）
   - 文字起こしは初回だけモデルのダウンロード（約1.5GB）があり、数分かかります
   - ロゴは `assets/logo/` に PNG を置くとエンドカードに使われます（ないときは仮の無地）
+- テロップの色はカラーコードで指定できます
+  ```
+  uv run python -m app.pipeline.run "D:\素材" --model FMVU59L2BA --emphasis-color "#E60012" --outline-color "#FFFFFF" --text-color "#1A1A1A"
+  ```
+  - `--text-color`（文字）、`--outline-color`（縁取り）、`--emphasis-color`（`**強調**` した言葉）、`--band-color`（文字の後ろの帯）、`--band-opacity`（帯の濃さ 0〜1）
+  - 1枚だけ色を変えたいときは、`project.json` のそのテロップに `"text_color": "#00A0E9"` などを書きます
+- 色や文言を直したあと、書き出しだけやり直す（文字起こしやテロップ作りはやり直しません）
+  ```
+  uv run python -m app.pipeline.run --rerender "projects/2026-11-05_FMVU59L2BA" --band-color "#000000"
+  ```
 - 完成動画とレポートは `projects/<日付>_<型番>/output/` にできます（型番の修正は「字幕修正ログ.txt」）
 - 元の素材フォルダは変更しません（プロジェクトの「素材」にコピーして使います）
 - 主なオプション: `--strength weak|normal|strong`（無音カットの強さ）、`--level small|medium|large`（BGM 音量）、

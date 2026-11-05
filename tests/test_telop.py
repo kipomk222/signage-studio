@@ -120,7 +120,7 @@ def test_ass_file(tmp_path):
     text = path.read_text(encoding="utf-8-sig")
     assert "PlayResX: 1920" in text and "Style: dela,Dela Gothic One" in text
     events = [l for l in text.splitlines() if l.startswith("Dialogue")]
-    assert events[0].startswith("Dialogue: 0,0:00:00.50,0:00:03.00,dela") and "FMV\\NNOTE U" in events[0]
+    assert events[0].startswith("Dialogue: 1,0:00:00.50,0:00:03.00,dela") and "FMV\\NNOTE U" in events[0]
     assert "｛危険｝な＼記号" in events[2]
     assert ass_time(3725.456) == "1:02:05.46"
 
@@ -176,3 +176,72 @@ def test_font_line_ratios_match_font_files():
         real = (t["OS/2"].usWinAscent + t["OS/2"].usWinDescent) / t["head"].unitsPerEm
         assert f.line_ratio == pytest.approx(real, abs=0.002), f.file
     assert fonts.ass_size("noto_bold", 100) == 145 and fonts.ass_size("biz_ud", 100) == 100
+
+
+
+# --- 色（カラーコード） -----------------------------------------------------------
+
+from app.errors import UserError  # noqa: E402
+from app.pipeline.colors import normalize_color, to_ass, to_ass_tag  # noqa: E402
+from app.project import TelopStyle  # noqa: E402
+
+
+@pytest.mark.parametrize("code, expected", [
+    ("#ffd400", "#FFD400"), ("FFD400", "#FFD400"), ("#fd0", "#FFDD00"), (" ＃00a0e9 ", "#00A0E9"), ("", ""),
+])
+def test_normalize_color(code, expected):
+    assert normalize_color(code) == expected
+
+
+@pytest.mark.parametrize("bad", ["赤", "#12345", "#GG0000", "rgb(0,0,0)"])
+def test_bad_color_is_explained(bad):
+    with pytest.raises(UserError) as e:
+        normalize_color(bad)
+    assert "#FFD400" in e.value.how
+
+
+def test_ass_color_order():
+    assert to_ass("#FF8000") == "&H000080FF"          # 青・緑・赤の順
+    assert to_ass("#FF8000", 0.6) == "&H660080FF"     # 透明度
+    assert to_ass_tag("#00A0E9") == "&HE9A000&"
+
+
+def _events(path):
+    return [l for l in path.read_text(encoding="utf-8-sig").splitlines() if l.startswith("Dialogue")]
+
+
+def test_colors_emphasis_and_override(tmp_path):
+    style = TelopStyle(text_color="#FFFFFF", outline_color="#1A2B3C", emphasis_color="#FFD400")
+    telops = [Telop(start=0, end=2, text="約**908g**の軽さ"),
+              Telop(start=3, end=5, text="持ち歩きがラク", text_color="#00A0E9", outline_color="#FFFFFF")]
+    ev = _events(build_telop_ass(telops, tmp_path / "c.ass", style=style))
+    assert "\\c&HFFFFFF&\\3c&H3C2B1A&}約{\\c&H00D4FF&}908g{\\c&HFFFFFF&}の軽さ" in ev[0]
+    assert "\\c&HE9A000&\\3c&HFFFFFF&}持ち歩きがラク" in ev[1]     # このテロップだけ色を変える
+    assert "**" not in "".join(ev)
+    assert fonts.font_size("約**908g**の軽さ") == fonts.font_size("約908gの軽さ")
+
+
+def test_band_is_drawn_behind_text(tmp_path):
+    style = TelopStyle(band_color="#000000", band_opacity=0.5)
+    path = build_telop_ass([Telop(start=0, end=2, text="約**908g**の軽さ")], tmp_path / "b.ass", style=style)
+    text = path.read_text(encoding="utf-8-sig")
+    assert "Style: band_biz_ud" in text and ",&H80000000,&HFF000000," in text and ",3,22,0,2," in text
+    ev = _events(path)
+    assert ev[0].startswith("Dialogue: 0,") and ev[0].endswith("約908gの軽さ")   # 帯（下の層）
+    assert ev[1].startswith("Dialogue: 1,")                                     # 文字（上の層）
+
+
+def test_title_uses_style_colors(tmp_path):
+    style = TelopStyle(text_color="#FFD400", outline_color="#C8102E")
+    text = cards.build_title_ass(tmp_path / "t.ass", "軽さで選ぶ", "FMVU59L2BA", "パソコン", "FMVU59L2BA",
+                                 style).read_text(encoding="utf-8-sig")
+    assert "\\c&H00D4FF&\\3c&H2E10C8&}軽さで選ぶ" in text
+
+
+def test_style_saved_with_project(tmp_path):
+    from app.project import create_project, load_project, save_project
+    project, folder = create_project(tmp_path, "X-1")
+    project.settings.telop_style = TelopStyle(emphasis_color="ff0000", band_color="#000")
+    save_project(folder, project)
+    st = load_project(folder).settings.telop_style
+    assert (st.emphasis_color, st.band_color, st.text_color) == ("#FF0000", "#000000", "#FFFFFF")
