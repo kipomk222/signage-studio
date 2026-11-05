@@ -84,6 +84,7 @@ class ScriptedTranscriber:
 
     def __init__(self, sentences: list[str]):
         self.sentences = sentences
+        self.next = 0  # クリップをまたいで、台本の続きから当てはめる
 
     def __call__(self, video: Path, hint: str):
         import re
@@ -103,8 +104,9 @@ class ScriptedTranscriber:
         if dur - cur > 0.3:
             speech.append((cur, dur))
         words = []
-        for i, (a, b) in enumerate(speech):
-            text = self.sentences[i % len(self.sentences)]
+        for a, b in speech:
+            text = self.sentences[self.next % len(self.sentences)]
+            self.next += 1
             pieces = [text[j:j + 3] for j in range(0, len(text), 3)]
             step = (b - a) / len(pieces)
             words += [Word(a + k * step, a + (k + 1) * step, p) for k, p in enumerate(pieces)]

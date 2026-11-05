@@ -9,6 +9,8 @@ dependencies = [
     # 文字起こし: Mac は Apple Silicon 向け、Windows は CPU 向け
     "mlx-whisper>=0.4; sys_platform == 'darwin' and platform_machine == 'arm64'",
     "faster-whisper>=1.1; sys_platform != 'darwin'",
+    "nicegui>=2.10",
+    "pywebview>=5.3 ; sys_platform != 'linux'",
 ]
 
 [dependency-groups]

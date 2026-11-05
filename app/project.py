@@ -97,9 +97,15 @@ class Plan(BaseModel):
 class Clip(BaseModel):
     file: str  # 素材/ からの相対パス
     scene_id: str | None = None
+    scene_manual: bool = False   # 手で場面を選んだ（自動で変えない）
+    scene_guessed: bool = False  # 話していない等で、直前のクリップから推測した
     excluded: bool = False
     exclude_reason: str = ""
+    duration: float = 0
+    vertical: bool = False
+    transcript: str = ""
     cut_ranges: list[tuple[float, float]] = Field(default_factory=list)
+    kept_seconds: float = 0
 
 
 class Telop(BaseModel):
@@ -141,6 +147,7 @@ class Settings(BaseModel):
     bgm_file: str = ""
     bgm_level: Literal["small", "medium", "large"] = "medium"
     silence_strength: Literal["weak", "normal", "strong"] = "normal"
+    fit: Literal["pad", "crop"] = "pad"  # 縦撮りを 黒帯／切り抜き
     outputs: list[Literal["store", "youtube"]] = Field(default_factory=lambda: ["store"])
     telop_style: TelopStyle = Field(default_factory=TelopStyle)
 
@@ -159,6 +166,8 @@ class Project(BaseModel):
     stale: list[Stage] = Field(default_factory=list)  # 「再作成が必要」な段階
     product: Product
     title: str = ""  # 冒頭タイトル
+    youtube_title: str = ""
+    youtube_description: str = ""
     plan: Plan = Field(default_factory=Plan)
     clips: list[Clip] = Field(default_factory=list)
     telops: list[Telop] = Field(default_factory=list)

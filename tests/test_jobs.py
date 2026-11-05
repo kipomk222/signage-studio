@@ -1,0 +1,54 @@
+"""中止ボタンと進み具合のテスト。"""
+
+import sys
+import threading
+import time
+
+import pytest
+
+from app.jobs import Cancelled, Job, run_process
+
+SLOW_ECHO = [sys.executable, "-c", "import sys,time; d=sys.stdin.read(); time.sleep(1.2); print(d.upper())"]
+
+
+def test_input_survives_waiting():
+    """入力を渡したプロセスを何度も待っても壊れない（Claude Code への依頼はこの形）。"""
+    r = run_process(SLOW_ECHO, input="hello")
+    assert r.returncode == 0 and r.stdout.strip() == "HELLO"
+
+
+def test_cancel_stops_running_process():
+    job, result = Job(), {}
+
+    def go():
+        with job.active():
+            try:
+                run_process([sys.executable, "-c", "import time; time.sleep(30)"])
+            except Cancelled as e:
+                result["err"] = e
+
+    t = threading.Thread(target=go)
+    t.start()
+    time.sleep(0.8)
+    t0 = time.monotonic()
+    job.cancel()
+    t.join(5)
+    assert "err" in result and time.monotonic() - t0 < 2
+    assert "中止" in result["err"].what
+
+
+def test_timeout():
+    import subprocess
+    with pytest.raises(subprocess.TimeoutExpired):
+        run_process([sys.executable, "-c", "import time; time.sleep(5)"], timeout=1)
+
+
+def test_progress_and_check():
+    seen = []
+    job = Job(lambda f, m: seen.append((f, m)))
+    job.step(0.3, "a")
+    job.step(0.2, "b")       # 進み具合は戻らない
+    assert seen == [(0.3, "a"), (0.3, "b")]
+    job.cancel()
+    with pytest.raises(Cancelled):
+        job.step(0.5, "c")

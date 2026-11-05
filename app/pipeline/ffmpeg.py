@@ -7,6 +7,7 @@ import subprocess
 from pathlib import Path
 
 from app.errors import UserError
+from app.jobs import run_process
 
 
 class PipelineError(UserError):
@@ -23,8 +24,7 @@ DEFAULT_HOW = "素材ファイルが壊れていないか確認して、もう�
 def run(args: list[str], what: str, how: str = DEFAULT_HOW, timeout: float | None = None) -> subprocess.CompletedProcess:
     """コマンドを実行し、失敗したら PipelineError にする。"""
     try:
-        result = subprocess.run(args, capture_output=True, text=True, encoding="utf-8",
-                                errors="replace", timeout=timeout, check=False)
+        result = run_process(args, timeout=timeout)  # 中止ボタンで止められる
     except subprocess.TimeoutExpired as exc:
         raise PipelineError(what, "時間がかかりすぎたため中止しました。もう一度お試しください。", str(exc)) from exc
     if result.returncode != 0:

@@ -20,6 +20,7 @@ from typing import TypeVar
 from pydantic import BaseModel, ValidationError
 
 from app.errors import UserError
+from app.jobs import run_process
 
 ROOT = Path(__file__).resolve().parents[2]
 PROMPTS = ROOT / "prompts"
@@ -63,8 +64,7 @@ Runner = Callable[[list[str], str, Path, float], ProcResult]
 
 
 def subprocess_runner(cmd: list[str], stdin: str, cwd: Path, timeout: float) -> ProcResult:
-    r = subprocess.run(cmd, input=stdin, capture_output=True, text=True, encoding="utf-8",
-                       errors="replace", cwd=cwd, timeout=timeout, check=False)
+    r = run_process(cmd, input=stdin, cwd=cwd, timeout=timeout)  # 中止ボタンで止められる
     return ProcResult(r.returncode, r.stdout, r.stderr)
 
 

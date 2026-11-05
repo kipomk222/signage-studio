@@ -162,7 +162,7 @@ def test_edit_folder_end_to_end(profile, samples, bgm_file, tmp_path):
         assert e.duration == pytest.approx(report.joined_seconds, abs=0.2)
 
     project = load_project(report.project_dir)
-    assert project.stage is Stage.REVIEW
+    assert project.stage is Stage.DONE
     assert [c.file for c in project.clips if not c.excluded] == ["01_talk.mp4", "02_vertical.mp4", "05_talk.mp4"]
     assert all(c.cut_ranges for c in project.clips if not c.excluded)
     assert project.settings.bgm_file == "bgm.m4a"

@@ -13,29 +13,22 @@ import argparse
 import shutil
 import sys
 from collections.abc import Callable
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from pathlib import Path
 
-from app.claude.calls import make_telops, merge_manual
 from app.claude.runner import ClaudeCode
 from app.errors import UserError
 from app.pipeline import bgm as bgm_step
-from app.pipeline.cards import END_SECONDS, TITLE_SECONDS, find_logo, make_end_card, make_title_card
-from app.pipeline.fixterms import Fix, TermFixer, collect_terms, log_text
-from app.pipeline.telop_render import build_telop_ass, burn_ass
-from app.pipeline.transcribe import Transcriber, hint_text, save_words, to_phrases, transcribe
-from app.pipeline.concat import FADE, concat_clips
-from app.pipeline.export import TARGETS, ExportResult, export_video
-from app.pipeline.inventory import ClipInfo, scan_folder
-from app.pipeline.normalize import normalize_clip
-from app.pipeline.silence import STRENGTH, TIGHTEST_MIN_SILENCE, CutResult, jumpcut
+from app.pipeline.export import TARGETS, ExportResult
+from app.pipeline.fixterms import Fix
+from app.pipeline.inventory import ClipInfo
+from app.pipeline.silence import STRENGTH, CutResult
+from app.pipeline.transcribe import Transcriber
 from app.platform import PlatformProfile, get_profile
-from app.project import (
-    Clip, Price, Product, Project, Scene, Stage, Telop, TelopStyle, create_project, load_project, save_project,
-)
+from app.project import Price, Product, Scene, Telop, TelopStyle, create_project, load_project, save_project
+from app.workflow import Services, build_edit, export_all, import_material, render_telop_video  # noqa: F401
 
 ROOT = Path(__file__).resolve().parents[2]
-MIN_USABLE = 2 * FADE + 0.2  # これより短く残ったクリップはつなぎ目に収まらないので使わない
 
 Progress = Callable[[str], None]
 
@@ -92,13 +85,16 @@ class RunReport:
         return "\n".join(lines)
 
 
-def copy_into_project(src_folder: Path, dst_folder: Path, clips: list[ClipInfo]) -> None:
-    """元の素材はそのままに、プロジェクトの「素材」へコピーする。"""
-    for c in clips:
-        target = dst_folder / c.path.name
-        if not target.exists():
-            shutil.copy2(c.path, target)
-        c.path = target
+class _PrintJob:
+    """コマンドで動かすときの進み具合の表示（画面の Job の代わり）。"""
+
+    def __init__(self, progress: Progress, label: str) -> None:
+        self.progress, self.label, self.last = progress, label, ""
+
+    def step(self, fraction: float, message: str) -> None:
+        if message != self.last:
+            self.progress(f"[{self.label}] {message}")
+            self.last = message
 
 
 def edit_folder(
@@ -116,172 +112,63 @@ def edit_folder(
     profile: PlatformProfile | None = None,
     progress: Progress = print,
 ) -> RunReport:
+    """素材フォルダから完成動画までを一度に作る（画面と同じ処理を順に呼ぶ）。"""
     outputs = outputs or ["store"]
-    profile = profile or get_profile()
     src_folder = Path(src_folder)
     if not src_folder.is_dir():
         raise UserError("素材フォルダが見つかりません。", "フォルダの場所を確認してください。")
+    services = Services(claude=telop.claude if telop else None, transcriber=telop.transcriber if telop else None,
+                        profile=profile or get_profile(), logo=telop.logo if telop else None)
 
     project, folder = create_project(projects_root, model_number)
     if target_seconds:
         project.plan.target_seconds = target_seconds
-    work, out = folder / "work", folder / "output"
-    notes: list[str] = []
-    n = 8 if telop else 6
-    step = iter(range(1, n + 1))
-    say = lambda msg: progress(f"[{next(step)}/{n}] {msg}")  # noqa: E731
-
-    say("素材を調べています")
-    clips = scan_folder(profile, src_folder)
-    if not clips:
-        raise UserError("素材フォルダに動画が見つかりません。", "スマホで撮った動画ファイルを入れてください。")
-    copy_into_project(src_folder, folder / "素材", clips)
-    use = clips if keep_all else [c for c in clips if not c.excluded]
-    if not use:
-        raise UserError("使える動画がありませんでした。", "除外の理由を確認して、素材を入れ直してください。")
-
-    say(f"形式をそろえています（{len(use)}本）")
-    normalized = [normalize_clip(profile, c, work / "norm" / f"{i:03d}.mp4", fit=fit)  # type: ignore[arg-type]
-                  for i, c in enumerate(use, 1)]
-
-    say("話していない部分を詰めています")
-    params = STRENGTH[strength]
-    cuts = [jumpcut(profile, n, work / "cut" / n.name, params) for n in normalized]
-    estimate = sum(r.kept for r in cuts) - FADE * (len(cuts) - 1)
-    target = project.plan.target_seconds - (TITLE_SECONDS + END_SECONDS if telop else 0)
-    if estimate > target and params.min_silence > TIGHTEST_MIN_SILENCE:
-        tight = replace(params, min_silence=TIGHTEST_MIN_SILENCE)
-        cuts = [jumpcut(profile, n, work / "cut" / n.name, tight) for n in normalized]
-        notes.append(f"目標の長さ（{target}秒）を超えたため、無音カットを強めました。")
-    for c, r in zip(use, cuts):
-        r.src = c.path  # レポートは元のファイル名で表示する
-        if r.over_cut:
-            notes.append(f"「{c.path.name}」は半分以下まで短くなりました。切りすぎていないか確認してください。")
-
-    pieces = [r.dst for r in cuts if r.kept >= MIN_USABLE]
-    for c, r in zip(use, cuts):
-        if r.kept < MIN_USABLE:
-            notes.append(f"「{c.path.name}」は残った部分が短すぎるため使いませんでした。")
-    if not pieces:
-        raise UserError("つなげられる部分が残りませんでした。", "無音カットの強さを「弱」にして、もう一度お試しください。")
-
-    say("クリップをつないでいます")
-    joined = work / "joined.mp4"
-    joined_seconds = concat_clips(profile, pieces, joined)
-    main_video, title, telops, fixes = joined, "", [], []
-
+    project.settings.silence_strength = strength  # type: ignore[assignment]
+    project.settings.bgm_level = level  # type: ignore[assignment]
+    project.settings.fit = fit  # type: ignore[assignment]
+    project.settings.outputs = outputs  # type: ignore[assignment]
     if telop:
-        product = telop.product
-        project.product = product
-        project.plan.scenes = telop.scenes
-        project.plan.price = telop.price
-        project.plan.extra_text = telop.extra_text
-
-        say("話した内容を文字にしています（初回は準備に数分かかります）")
-        words = transcribe(profile, joined, hint_text(collect_terms(product)[:20] + [product.name]),
-                           telop.transcriber)
-        save_words(words, work / "words.json")
-        fixer = TermFixer.for_product(product)
-        transcript = []
-        for ph in to_phrases(words):
-            text, fx = fixer.fix(ph.text, f"{ph.start:.1f}秒")
-            fixes += fx
-            transcript.append({"start": ph.start, "end": ph.end, "text": text})
-        (out / "字幕修正ログ.txt").write_text(log_text(fixes), encoding="utf-8")
-
-        say("テロップを作っています")
-        title, new = make_telops(telop.claude or ClaudeCode(), product, telop.scenes, transcript,
-                                 joined_seconds, telop.price, telop.extra_text)
-        telops = merge_manual(new, project.telops)
-        project.title, project.telops = title, telops
+        project.product, project.plan.scenes = telop.product, telop.scenes
+        project.plan.price, project.plan.extra_text = telop.price, telop.extra_text
         if telop.style:
             project.settings.telop_style = telop.style
-        main_video = render_telop_video(profile, project, folder, telop.logo, notes)
-
-    say("BGM を重ねています")
-    if bgm_path is None:
-        found = bgm_step.find_bgm_files(ROOT / "assets" / "bgm")
-        bgm_path = found[0] if found else None
-    if bgm_path is None:
-        notes.append("BGM が見つからなかったため、BGM なしで書き出しました。assets/bgm に曲を入れると使われます。")
-    else:  # 色だけ変えて作り直すときにも同じ曲を使えるよう、プロジェクトに控えておく
-        for old in work.glob("bgm.*"):
-            old.unlink()
-        shutil.copy2(bgm_path, work / f"bgm{bgm_path.suffix.lower()}")
-    mixed = bgm_step.mix_bgm(profile, main_video, bgm_path, work / "mixed.mp4", level=level)
-
-    say("書き出しています")
-    exports = [export_video(profile, mixed, out, folder.name, key) for key in outputs]
-
-    # プロジェクトに記録
-    cut_by_src = {r.src: r for r in cuts}
-    project.clips = [
-        Clip(
-            file=c.path.name,
-            excluded=(c.excluded and not keep_all),
-            exclude_reason="、".join(c.exclude_reasons),
-            cut_ranges=cut_by_src[c.path].ranges if c.path in cut_by_src else [],
-        )
-        for c in clips
-    ]
-    project.settings.bgm_file = bgm_path.name if bgm_path else ""
-    project.settings.bgm_level = level  # type: ignore[assignment]
-    project.settings.silence_strength = strength  # type: ignore[assignment]
-    project.settings.outputs = outputs  # type: ignore[assignment]
-    project.complete_stage(Stage.PLAN)
-    project.complete_stage(Stage.MATERIAL)
+    if bgm_path is not None:  # 指定された曲をプロジェクトに控える（作り直しでも同じ曲を使う）
+        (folder / "work").mkdir(exist_ok=True)
+        shutil.copy2(bgm_path, folder / "work" / f"bgm{Path(bgm_path).suffix.lower()}")
+        project.settings.bgm_file = Path(bgm_path).name
     save_project(folder, project)
 
-    report = RunReport(folder, clips, cuts, joined_seconds, exports, bgm_path, notes, title, telops, fixes)
-    (out / "レポート.txt").write_text(report.text(), encoding="utf-8")
+    clips = import_material(folder, src_folder, services, _PrintJob(progress, "素材"))  # type: ignore[arg-type]
+    if keep_all:
+        project = load_project(folder)
+        for c in project.clips:
+            c.excluded = False
+        save_project(folder, project)
+    edit = build_edit(folder, services, with_telops=bool(telop), job=_PrintJob(progress, "編集"))  # type: ignore[arg-type]
+    notes = list(edit.notes)
+    exports = export_all(folder, services, outputs, job=_PrintJob(progress, "書き出し"), notes=notes)  # type: ignore[arg-type]
+
+    from app.workflow import find_bgm
+    project = load_project(folder)
+    report = RunReport(folder, clips, edit.cuts, edit.joined_seconds, exports, find_bgm(folder, project), notes,
+                       project.title, project.telops, edit.fixes)
+    (folder / "output" / "レポート.txt").write_text(report.text(), encoding="utf-8")
     return report
-
-
-def render_telop_video(profile: PlatformProfile, project: Project, folder: Path,
-                       logo: Path | None = None, notes: list[str] | None = None) -> Path:
-    """つないだ動画にテロップを入れ、冒頭タイトルとエンドカードを付ける。"""
-    work = folder / "work"
-    joined = work / "joined.mp4"
-    p, style = project.product, project.settings.telop_style
-    ass = build_telop_ass(project.telops, work / "telops.ass", p.category, p.model_number, style)
-    with_telops = burn_ass(profile, joined, ass, work / "telops.mp4")
-    logo = logo or find_logo()
-    if logo is None and notes is not None:
-        notes.append("ロゴが見つからなかったため、エンドカードは仮の無地にしました。assets/logo にロゴを入れると使われます。")
-    title_card = make_title_card(profile, joined, project.title, p.model_number, work / "title.mp4",
-                                 p.category, p.model_number, style)
-    end_card = make_end_card(profile, work / "end.mp4", logo)
-    main_video = work / "with_cards.mp4"
-    concat_clips(profile, [title_card, with_telops, end_card], main_video)
-    return main_video
 
 
 def rerender(project_dir: Path, style: TelopStyle | None = None, outputs: list[str] | None = None,
              profile: PlatformProfile | None = None, progress: Progress = print) -> list[ExportResult]:
-    """テロップの色や文言を直したあと、編集し直さずに書き出しだけやり直す。
-
-    文字起こしやテロップ作りはやり直さない（project.json のテロップをそのまま使う）。
-    """
-    profile = profile or get_profile()
+    """テロップの色や文言を直したあと、編集し直さずに書き出しだけやり直す。"""
     folder = Path(project_dir)
     project = load_project(folder)
-    work, out = folder / "work", folder / "output"
-    if not (work / "joined.mp4").exists() or not project.telops:
+    if not (folder / "work" / "joined.mp4").exists() or not project.telops:
         raise UserError("作り直せる編集結果が見つかりません。",
                         "一度、素材フォルダから完成動画まで作ってから、お試しください。")
     if style:
         project.settings.telop_style = style
-    outputs = outputs or list(project.settings.outputs)
-    progress("[1/3] テロップを入れ直しています")
-    main_video = render_telop_video(profile, project, folder)
-    progress("[2/3] BGM を重ねています")
-    bgm = next(iter(sorted(work.glob("bgm.*"))), None)
-    mixed = bgm_step.mix_bgm(profile, main_video, bgm, work / "mixed.mp4", level=project.settings.bgm_level)
-    progress("[3/3] 書き出しています")
-    exports = [export_video(profile, mixed, out, folder.name, key) for key in outputs]
-    project.settings.outputs = outputs  # type: ignore[assignment]
-    save_project(folder, project)
-    return exports
+        save_project(folder, project)
+    return export_all(folder, Services(profile=profile or get_profile()), outputs,
+                      job=_PrintJob(progress, "書き出し"))  # type: ignore[arg-type]
 
 
 def style_from_args(args, base: TelopStyle | None = None) -> TelopStyle | None:
