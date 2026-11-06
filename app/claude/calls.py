@@ -16,6 +16,7 @@ from app.claude.schemas import (
     TITLE_MAX_CHARS,
     AiEdit,
     AiVideoEdit,
+    TelopCheckOut,
     PlanOut,
     ProductInfo,
     TelopsOut,
@@ -151,14 +152,20 @@ def make_plan(cc: ClaudeCode, product: Product, target_seconds: int, price: Pric
 
 # --- テロップ -------------------------------------------------------------------
 
+def visual_text(visual: list[tuple[float, float, str]] | None) -> str:
+    return "\n".join(f"{a:.1f}-{b:.1f}: {desc}" for a, b, desc in visual or []) or "（分かりません）"
+
+
 def make_telops(cc: ClaudeCode, product: Product, scenes: list[Scene], transcript: list[dict],
-                duration: float, price: Price, extra_text: str = "") -> tuple[str, list[Telop]]:
+                duration: float, price: Price, extra_text: str = "",
+                visual: list[tuple[float, float, str]] | None = None) -> tuple[str, list[Telop]]:
     """冒頭タイトルと要点テロップを作る。
 
     transcript: [{"start": 秒, "end": 秒, "text": "..."}]（編集後の動画の時刻）
+    visual: [(始まり, 終わり, 映っているもの)]（同じ時刻。テロップを映像に合わせるため）
     """
     lines = "\n".join(f"{t['start']:.1f}-{t['end']:.1f}: {t['text']}" for t in transcript) or "（なし）"
-    prompt = load_prompt("telop", product=product_text(product), script=scenes_text(scenes),
+    prompt = load_prompt("telop", product=product_text(product), script=scenes_text(scenes), visual=visual_text(visual),
                          transcript=lines, duration=f"{duration:.1f}", price=price_text(price),
                          extra=extra_text.strip() or "なし", max_chars=str(TELOP_MAX_CHARS),
                          title_max=str(TITLE_MAX_CHARS))
@@ -287,3 +294,18 @@ def assign_voices(cc: ClaudeCode, scenes: list[Scene], files: list[tuple[str, fl
     out = cc.ask(load_prompt("assign", scenes=scene_lines, files=file_lines), AssignOut, timeout=WRITE_TIMEOUT,
                  kind="assign", check=make_assign_check({f for f, _, _ in files}, {s.id for s in scenes}))
     return {a.file: (a.scene_id, a.reason) for a in out.assignments}
+
+
+# --- テロップと映像の照合 ---------------------------------------------------------------
+
+def check_telops_call(cc: ClaudeCode, product: Product, telops: list[Telop], visual: list[tuple[float, float, str]],
+                      duration: float, sheets: list[Path]) -> TelopCheckOut:
+    """テロップと、その時刻に映っている映像が食い違っていないか確かめ、直し方を返してもらう。"""
+    from app.claude.schemas import make_telop_fix_check
+    lines = "\n".join(f"{i}. {t.start:.1f}-{t.end:.1f}: {t.text.replace(chr(10), '／')}"
+                      + ("（手で直したテロップ）" if t.manual else "") for i, t in enumerate(telops))
+    prompt = load_prompt("telop_check", product=product_text(product), telops=lines, visual=visual_text(visual),
+                         duration=f"{duration:.1f}", max_chars=str(TELOP_MAX_CHARS),
+                         sheets="\n".join(f"- {p.name}" for p in sheets) or "（なし）")
+    return cc.ask(prompt, TelopCheckOut, tools=["Read"] if sheets else [], files=sheets, timeout=EDIT_TIMEOUT,
+                  check=make_telop_fix_check(telops, duration), kind="telop_check")

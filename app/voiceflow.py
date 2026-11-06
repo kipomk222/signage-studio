@@ -28,7 +28,7 @@ from app.claude.calls import (
 from app.errors import UserError
 from app.jobs import Cancelled, Job
 from app.pipeline.concat import FADE
-from app.pipeline.edl import PieceLayout, map_time, render_plan
+from app.pipeline.edl import PieceLayout, load_layouts, map_time, render_plan, save_layouts, visual_of
 from app.pipeline.ffmpeg import duration_of, ffmpeg_base, run
 from app.pipeline.fit import LEAD, Cut, fit_scene, target_length
 from app.pipeline.fixterms import TermFixer, collect_terms, log_text
@@ -57,6 +57,7 @@ from app.project import (
     load_project,
     save_project,
 )
+from app.telopcheck import check_after_telops
 from app.workflow import (
     ClipData,
     EditResult,
@@ -183,18 +184,15 @@ def _layout_path(folder: Path, name: str) -> Path:
     return folder / "work" / f"{name}_layout.json"
 
 
-def _save_layouts(path: Path, layouts: list[PieceLayout], total: float) -> None:
-    data = {"total": total, "layouts": [{"index": x.index, "clip": x.clip, "ranges": x.ranges, "out_start": x.out_start,
-                                         "speed": x.speed, "hold": x.hold, "scene_id": x.scene_id} for x in layouts]}
-    path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+def _save_layouts(path: Path, layouts: list[PieceLayout], total: float, visual=None) -> None:
+    save_layouts(path, layouts, total, visual)
 
 
 def _load_layouts(path: Path) -> tuple[list[PieceLayout], float]:
     if not path.exists():
         raise UserError("まだ映像ができていません。", "映像の画面で「映像を編集する」を押してください。")
-    d = json.loads(path.read_text(encoding="utf-8"))
-    return [PieceLayout(x["index"], x["clip"], [tuple(r) for r in x["ranges"]], x["out_start"], x["speed"], x["hold"],
-                        x["scene_id"]) for x in d["layouts"]], d["total"]
+    layouts, total, _ = load_layouts(path)
+    return layouts, total
 
 
 @_scoped
@@ -216,7 +214,7 @@ def render_video(folder: Path, services: Services, job: Job | None = None, resul
     except ValueError:
         raise UserError("つなげられるカットが残りませんでした。", "使うカットを増やして、もう一度お試しください。") from None
     os.replace(base, work / "video.mp4")
-    _save_layouts(_layout_path(folder, "video"), layouts, total)
+    _save_layouts(_layout_path(folder, "video"), layouts, total, visual_of(layouts, project.edit.pieces))
     res.joined_seconds = total
     project.complete_stage(Stage.MATERIAL)
     project.mark_changed(Stage.VIDEO)
@@ -508,10 +506,13 @@ def fit_to_voices(project: Project, data: dict[str, ClipData]) -> tuple[list[Edi
                   if p.enabled and p.scene_id == s.id and p.clip in dur]
         r = fit_scene(cuts, target_length(voice[s.id].duration), spares)
         notes += [f"「{s.title}」: {n}" for n in dict.fromkeys(r.notes)]
-        shows = {(p.clip): p.shows for p in pieces + project.edit.spares}
+        spare_shows = [p.shows for p in project.edit.spares if p.enabled and p.scene_id == s.id and p.clip in dur]
+        kept = [c for c in r.cuts if not c.spare]
+        added = [c for c in r.cuts if c.spare]
         out += [EditPiece(clip=c.clip, start=c.start, end=c.end, scene_id=s.id, mute=True, speed=c.speed, hold=c.hold,
-                          shows=shows.get(c.clip, ""), reason="予備のカットから足した" if c.spare else "声に合わせて長さを調整")
-                for c in r.cuts]
+                          shows=p.shows, reason="声に合わせて長さを調整") for c, p in zip(kept, pieces)]
+        out += [EditPiece(clip=c.clip, start=c.start, end=c.end, scene_id=s.id, mute=True, speed=c.speed, hold=c.hold,
+                          shows=sh, reason="予備のカットから足した") for c, sh in zip(added, spare_shows)]
     return out, notes, missing
 
 
@@ -534,7 +535,8 @@ def finish_with_voices(folder: Path, services: Services, job: Job | None = None)
     base, layouts, total = render_plan(
         profile, EditPlan(pieces=pieces), {f: d.norm for f, d in data.items()}, {f: d.keeps for f, d in data.items()},
         work, progress=lambda f, m: _step(job, 0.3 + 0.35 * f, m))
-    _save_layouts(_layout_path(folder, "final"), layouts, total)
+    visual = visual_of(layouts, pieces)
+    _save_layouts(_layout_path(folder, "final"), layouts, total, visual)
     spans = scene_spans(layouts)
 
     _step(job, 0.7, "声を重ねています")
@@ -567,12 +569,14 @@ def finish_with_voices(folder: Path, services: Services, job: Job | None = None)
         fixes += fx
     (folder / "output" / "字幕修正ログ.txt").write_text(log_text(fixes), encoding="utf-8")
     title, new = make_telops(services.cc(), project.product, project.plan.scenes, transcript, total,
-                             project.plan.price, project.plan.extra_text)
+                             project.plan.price, project.plan.extra_text, visual=visual)
     project = load_project(folder)
     project.title, project.telops = title, merge_manual(new, project.telops)
     project.fitted, project.fit_notes = pieces, res.notes
     project.complete_stage(Stage.NARRATION)
     save_project(folder, project)
+    _step(job, 0.9, "テロップと映像に食い違いがないか、Claude Code が確かめています")
+    res.notes += check_after_telops(folder, services)
     _step(job, 1.0, "声に合わせて仕上げました")
     return res
 

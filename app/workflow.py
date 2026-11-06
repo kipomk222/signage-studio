@@ -422,7 +422,7 @@ def replan_edit(folder: Path, services: Services, job: Job | None = None) -> Edi
 def render_edit(folder: Path, services: Services, with_telops: bool = True, job: Job | None = None,
                 result: EditResult | None = None, data: dict[str, ClipData] | None = None) -> EditResult:
     """設計図どおりに動画を作り、テロップを付ける（画面で設計図を直したあとの「この内容で作り直す」も）。"""
-    from app.pipeline.edl import apply_inserts, map_time, place_inserts, render_plan
+    from app.pipeline.edl import apply_inserts, map_time, place_inserts, render_plan, save_layouts, visual_of
     profile, project = services.prof(), load_project(folder)
     if project.edit is None or not any(p.enabled for p in project.edit.pieces):
         raise UserError("使う部分がありません。", "「使う」にした部分を1つ以上にしてください。")
@@ -447,6 +447,9 @@ def render_edit(folder: Path, services: Services, with_telops: bool = True, job:
     placed = place_inserts(project.edit, layouts, total)
     apply_inserts(profile, base, placed, norm, work / "joined.mp4")
     res.joined_seconds = total
+    visual = visual_of(layouts, project.edit.pieces, placed,
+                       {(x.clip, round(x.start, 2)): x.reason for x in project.edit.inserts})
+    save_layouts(work / "edit_layout.json", layouts, total, visual)
 
     # レポート用: クリップごとに、どれだけ使ったか
     res.cuts = []
@@ -476,11 +479,15 @@ def render_edit(folder: Path, services: Services, with_telops: bool = True, job:
         (out / "字幕修正ログ.txt").write_text(log_text(res.fixes), encoding="utf-8")
         _step(job, 0.88, "テロップを作っています")
         title, new = make_telops(services.cc(), project.product, project.plan.scenes, transcript,
-                                 total, project.plan.price, project.plan.extra_text)
+                                 total, project.plan.price, project.plan.extra_text, visual=visual)
         project.title, project.telops = title, merge_manual(new, project.telops)
 
     project.complete_stage(Stage.MATERIAL)
     save_project(folder, project)
+    if with_telops and project.telops:
+        from app.telopcheck import check_after_telops
+        _step(job, 0.95, "テロップと映像に食い違いがないか、Claude Code が確かめています")
+        res.notes += check_after_telops(folder, services)
     make_edit_thumbs(folder, services)
     _step(job, 1.0, "編集ができました")
     return res

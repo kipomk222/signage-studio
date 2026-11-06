@@ -27,6 +27,7 @@ SKILL_FOR = {
     "plan": "signage-script",
     "edit": "signage-edit",
     "telop": "signage-telop",
+    "telop_check": "signage-telop",
     "narration": "signage-narration",
     "consult": None,  # 相談はすべてのスキルを読む
 }

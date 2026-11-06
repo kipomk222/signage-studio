@@ -20,7 +20,7 @@ _local = threading.local()
 _lock = threading.Lock()
 
 KIND_LABELS = {"research": "商品調査", "extract": "商品ページの整理", "plan": "構成づくり", "edit": "編集の判断",
-               "narration": "ナレーション台本", "assign": "声の振り分け",
+               "narration": "ナレーション台本", "assign": "声の振り分け", "telop_check": "テロップと映像の照合",
                "telop": "テロップ", "youtube": "YouTube説明文", "consult": "相談", "test": "接続テスト"}
 
 

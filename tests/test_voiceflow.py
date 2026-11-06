@@ -40,6 +40,7 @@ NARRATION = {"scenes": [{"scene_id": "s2", "script": S2}, {"scene_id": "s3", "sc
 ASSIGN = {"assignments": [{"file": "新規録音.m4a", "scene_id": "s2", "reason": "軽さの話"},
                           {"file": "新規録音 2.m4a", "scene_id": "s2", "reason": "軽さの話（言い直し）"}]}
 TELOPS = {"title": "軽いパソコン", "telops": [{"start": 1.0, "end": 3.0, "text": "**軽い**"}]}
+CHECK = {"summary": "食い違いはありません。", "fixes": []}
 
 
 @pytest.fixture
@@ -53,7 +54,7 @@ def project_folder(tmp_path):
     make_voice(voices / "03_画面.m4a", 7.0)          # 名前で分かる。映像より長い → 伸ばす
     make_voice(voices / "新規録音 2.m4a", 4.0)        # 録り直し（台本と違う）
     make_voice(voices / "新規録音.m4a", 4.0)          # 中身で振り分け。映像より短い → 詰める
-    fake = FakeClaude(VIDEO, NARRATION, ASSIGN, TELOPS)
+    fake = FakeClaude(VIDEO, NARRATION, ASSIGN, TELOPS, CHECK)
     services = wf.Services(claude=ClaudeCode(claude_path="claude", runner=fake), profile=get_profile(),
                            transcriber=ScriptedTranscriber([
                                "今回は", "このパソコンを", "紹介します", "ぜひ売り場へお越しください",
@@ -110,6 +111,8 @@ def test_separate_voice_flow(project_folder):
     assert (folder / "work" / "joined.mp4").exists()
     telop_prompt = fake.calls[3][1]
     assert S2[:6] in telop_prompt                                       # 別録りの声の中身からテロップを作る
+    assert "持ち上げる" in telop_prompt                                 # 映像の内容も渡す
+    assert "telops_1.jpg" in fake.calls[4][1] and p.telop_check_summary == "食い違いはありません。"
 
     exports = wf.export_all(folder, services, outputs=["store"])
     assert exports[0].path.exists() and load_project(folder).stage is Stage.DONE

@@ -532,6 +532,56 @@ async def material_page(pid: str) -> None:
 FONT_OPTIONS = {"": "自動"} | {k: v.label for k, v in FONTS.items()}
 
 
+ACTION_LABELS = {"move": "時刻を動かした", "rewrite": "文言を直した", "delete": "消した"}
+
+
+def shown(text: str) -> str:
+    """画面に出る文字だけ（強調の印 ** と改行を外す）。"""
+    return text.replace("**", "").replace("\n", " ")
+
+
+def telop_check_section(project: Project, folder: Path, pid: str) -> None:
+    """Claude Code がテロップと画面を見比べた結果（食い違いと、どう直したか）。"""
+    from app import telopcheck as tc
+    with section("テロップと映像の照らし合わせ",
+                 "テロップの内容と、そのとき画面に映っているものが食い違っていないか、Claude Code が画面を見て確かめます。"):
+        if project.telop_check_summary:
+            ui.label(project.telop_check_summary).classes("text-sm")
+        if project.telops and not project.telop_checks and project.telop_check_summary:
+            ui.label("食い違いは見つかりませんでした。").classes("text-sm text-green-700")
+        for i, c in enumerate(project.telop_checks):
+            with ui.card().classes("w-full gap-1" + (" opacity-60" if c.undone else "")).props("flat bordered"):
+                with ui.row().classes("w-full items-center gap-2"):
+                    if c.manual:
+                        ui.badge("手で直したテロップ（知らせるだけ）").props("color=orange")
+                    elif c.undone:
+                        ui.badge("元に戻した").props("color=grey")
+                    else:
+                        ui.badge(ACTION_LABELS[c.action]).props("color=primary")
+                    ui.label(f"「{shown(c.text)}」 {c.start:.1f}〜{c.end:.1f}秒").classes("font-bold")
+                ui.label(f"食い違い: {c.problem}").classes("text-sm")
+                if c.shows:
+                    ui.label(f"そのとき映っているもの: {c.shows}").classes("hint text-sm")
+                if c.after is not None and c.action != "delete":
+                    head = "おすすめの直し方" if c.manual else "直したあと"
+                    ui.label(f"{head}: 「{shown(c.after.text)}」 {c.after.start:.1f}〜{c.after.end:.1f}秒") \
+                        .classes("text-sm text-primary")
+                with ui.row().classes("gap-2"):
+                    if c.applied and not c.undone and not c.manual:
+                        ui.button("元に戻す", icon="undo", on_click=lambda i=i: (
+                            tc.undo_check(folder, i), ui.navigate.to(f"/p/{pid}/review"))).props("flat dense")
+                    if c.manual and not c.applied:
+                        ui.button("おすすめのとおり直す", icon="check", on_click=lambda i=i: (
+                            tc.apply_suggestion(folder, i), ui.navigate.to(f"/p/{pid}/review"))).props("flat dense")
+
+        async def recheck() -> None:
+            save_project(folder, project)
+            if await run_job("テロップと映像を照らし合わせています", tc.run_check, folder, CONFIG.services) is not None:
+                ui.navigate.to(f"/p/{pid}/review")
+
+        ui.button("テロップと映像を照らし合わせる", icon="fact_check", on_click=recheck).props("outline")
+
+
 def fit_section(project: Project, pid: str) -> None:
     """声に合わせて映像の長さを調整した結果（声を別に録る動画）。"""
     with section("② 声に合わせた調整", "映像の長さを、録った声に合わせました。声や台本を直すときはナレーションの画面へ。"):
@@ -664,6 +714,9 @@ async def review_page(pid: str) -> None:
                 telops_view.refresh()
 
             telops_view()
+
+        # --- テロップと映像の照らし合わせ ---
+        telop_check_section(project, folder, pid)
 
         # --- BGM ---
         with section("⑤ BGM"):

@@ -192,6 +192,22 @@ class Telop(BaseModel):
         classmethod(lambda cls, v: normalize_color(v)))
 
 
+class TelopCheck(BaseModel):
+    """テロップと映像の照合で見つかった食い違い1つ（と、その直し方）。"""
+
+    text: str                    # 照合したときのテロップの文言
+    start: float
+    end: float
+    problem: str                 # 何が食い違っているか
+    shows: str = ""              # その時刻に実際に映っているもの
+    action: Literal["move", "rewrite", "delete"]
+    before: Telop
+    after: Telop | None = None   # 直したあと（消したときは None）
+    applied: bool = False        # 直した
+    manual: bool = False         # 手で直したテロップなので、知らせるだけにした
+    undone: bool = False         # 元に戻した
+
+
 class TelopStyle(BaseModel):
     """テロップ全体の色。カラーコード（#RRGGBB）で指定する。"""
 
@@ -244,6 +260,8 @@ class Project(BaseModel):
     voices: list[VoiceTake] = Field(default_factory=list)
     fitted: list[EditPiece] = Field(default_factory=list)  # 声に合わせて長さを調整したあとのカット（仕上げに使う）
     fit_notes: list[str] = Field(default_factory=list)
+    telop_checks: list[TelopCheck] = Field(default_factory=list)
+    telop_check_summary: str = ""
     telops: list[Telop] = Field(default_factory=list)
     settings: Settings = Field(default_factory=Settings)
     history: list[HistoryEntry] = Field(default_factory=list)

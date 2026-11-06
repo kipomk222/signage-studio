@@ -458,6 +458,59 @@ def make_assign_check(files: set[str], scene_ids: set[str]):
     return check
 
 
+# --- テロップと映像の照合 ---------------------------------------------------------------
+
+class TelopFix(_Strict):
+    index: int                                   # テロップの番号（0から）
+    problem: str                                 # 何が食い違っているか
+    shows: str                                   # その時刻に実際に映っているもの
+    action: Literal["move", "rewrite", "delete"]
+    start: float                                 # 直したあとの時刻（move・rewrite。変えないなら元の値）
+    end: float
+    text: str                                    # 直したあとの文言（rewrite。変えないなら元の文言）
+
+
+class TelopCheckOut(_Strict):
+    summary: str
+    fixes: list[TelopFix]
+
+
+def make_telop_fix_check(telops, duration: float):
+    """直し方が当てはめられるか（範囲・文字数・重なり）。"""
+    def check(o: TelopCheckOut) -> list[str]:
+        problems = []
+        seen = set()
+        result = {i: (t.start, t.end) for i, t in enumerate(telops)}
+        for k, f in enumerate(o.fixes):
+            if not 0 <= f.index < len(telops):
+                problems.append(f"fixes[{k}] の index {f.index} はありません（0〜{len(telops) - 1}）。")
+                continue
+            if f.index in seen:
+                problems.append(f"テロップ {f.index} の直し方が2つあります。1つにしてください。")
+            seen.add(f.index)
+            if f.action == "delete":
+                result.pop(f.index, None)
+                continue
+            if not 0 <= f.start < f.end <= duration + 0.01 or f.end - f.start < 1.0:
+                problems.append(f"テロップ {f.index} の時刻 {f.start}〜{f.end} は、動画（0〜{duration:.1f}秒）の中で1秒以上にしてください。")
+            if f.action == "rewrite":
+                if f.text.count("**") % 2:
+                    problems.append(f"テロップ {f.index} の ** が閉じていません。")
+                if telop_length(f.text) > TELOP_MAX_CHARS or len(f.text.split("\n")) > TELOP_MAX_LINES:
+                    problems.append(f"テロップ {f.index} の文言は {TELOP_MAX_CHARS} 文字・{TELOP_MAX_LINES} 行以内にしてください。")
+                if not f.text.strip():
+                    problems.append(f"テロップ {f.index} の文言が空です。消すなら action を delete にしてください。")
+            if not telops[f.index].manual:
+                result[f.index] = (f.start, f.end)
+        spans = sorted(result.values())
+        for (a1, b1), (a2, b2) in zip(spans, spans[1:]):
+            if a2 < b1 - 0.01:
+                problems.append(f"直したあと、{a1:.1f}〜{b1:.1f}秒と {a2:.1f}〜{b2:.1f}秒のテロップが重なります。重ならないようにしてください。")
+        return problems
+
+    return check
+
+
 # --- 相談 ---------------------------------------------------------------------
 
 ConsultAction = Literal[

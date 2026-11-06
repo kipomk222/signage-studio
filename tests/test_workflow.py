@@ -37,7 +37,9 @@ class FakeClaude:
 
     def __call__(self, cmd, stdin, cwd, timeout):
         self.prompts.append(stdin)
-        if "編集の設計図" in stdin:
+        if "食い違っていないか確かめて" in stdin:
+            out = {"summary": "食い違いはありません。", "fixes": []}
+        elif "編集の設計図" in stdin:
             out = self.edit
         elif "YouTube" in stdin:
             out = {"title": "富士通 NOTE U 紹介", "description": "・軽い"}
@@ -98,7 +100,9 @@ def test_import_edit_preview_export(setup):
     assert by_file["03.mp4"].scene_id == "s4"      # 手で選んだ場面は変えない
     assert "14.5時間" in by_file["01.mp4"].transcript
     assert project.edit.source == "auto" and [p.clip for p in project.edit.pieces] == ["02.mp4", "01.mp4", "03.mp4"]
-    prompt = fake.prompts[-1]   # テロップの依頼: 台本の順（導入 → バッテリー）に並んだ文字起こし
+    # テロップの依頼: 台本の順（導入 → バッテリー）に並んだ文字起こし
+    prompt = next(p for p in reversed(fake.prompts) if "要点テロップを作って" in p)
+    assert "食い違っていないか確かめて" in fake.prompts[-1]   # そのあとテロップと映像を照らし合わせる
     assert prompt.index("富士通のノートパソコン") < prompt.index("14.5時間")
     assert project.title == "NOTE U" and project.stage is Stage.REVIEW
     assert res.joined_seconds > 10 and res.source == "auto"
@@ -110,7 +114,7 @@ def test_import_edit_preview_export(setup):
     assert "01.mp4（8.0秒・話している秒数" in edit_prompt and "あ、すみません" in edit_prompt and "sheet_01.jpg" in edit_prompt
     project = load_project(folder)
     assert res.source == "ai" and project.edit.dropped[0].reason == "言い直し"
-    telop_prompt = fake.prompts[-1]
+    telop_prompt = next(p for p in reversed(fake.prompts) if "要点テロップを作って" in p)
     assert "あ、すみません" not in telop_prompt      # 切った言い直しはテロップの材料にも入らない
     assert telop_prompt.index("ノートパソコン") < telop_prompt.index("14.5時間")
     # 部分の中の間も詰める: 02(6.75) + 01(1.6) + 03(5.45) − つなぎ目 2×0.3

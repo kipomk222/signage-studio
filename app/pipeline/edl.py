@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -170,3 +171,37 @@ def apply_inserts(profile: PlatformProfile, base: Path, placed: list[PlacedInser
          *profile.video_args("work"), *AUDIO_ARGS, str(dst)],
         what="差し込みの映像を重ねられませんでした。")
     return dst
+
+
+# --- つないだ結果の記録（テロップの時刻合わせ・テロップと映像の照合に使う）-------------------
+
+Visual = tuple[float, float, str]   # (始まり, 終わり, 映っているもの)
+
+
+def save_layouts(path: Path, layouts: list[PieceLayout], total: float, visual: list[Visual] | None = None) -> None:
+    data = {"total": total,
+            "layouts": [{"index": x.index, "clip": x.clip, "ranges": x.ranges, "out_start": x.out_start,
+                         "speed": x.speed, "hold": x.hold, "scene_id": x.scene_id} for x in layouts],
+            "visual": [list(v) for v in visual or []]}
+    path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+
+def load_layouts(path: Path) -> tuple[list[PieceLayout], float, list[Visual]]:
+    d = json.loads(path.read_text(encoding="utf-8"))
+    layouts = [PieceLayout(x["index"], x["clip"], [tuple(r) for r in x["ranges"]], x["out_start"], x["speed"],
+                           x["hold"], x["scene_id"]) for x in d["layouts"]]
+    return layouts, d["total"], [(a, b, t) for a, b, t in d.get("visual", [])]
+
+
+def visual_of(layouts: list[PieceLayout], pieces: list[EditPiece], placed: list["PlacedInsert"] | None = None,
+              inserts_desc: dict[tuple[str, float], str] | None = None) -> list[Visual]:
+    """つないだ動画で、どの時刻に何が映っているか（カットの説明から）。差し込みは上に重なる。"""
+    out: list[Visual] = []
+    for lay in layouts:
+        p = pieces[lay.index]
+        desc = p.shows or (p.reason if p.mute else "スタッフが正面で話している")
+        out.append((round(lay.out_start, 2), round(lay.out_start + lay.length, 2), desc or "（説明なし）"))
+    for ins in placed or []:
+        desc = (inserts_desc or {}).get((ins.clip, round(ins.src_start, 2)), "")
+        out.append((round(ins.at, 2), round(ins.at + ins.length, 2), f"（差し込み）{desc or ins.clip}"))
+    return sorted(out)

@@ -202,6 +202,8 @@ def test_edit_folder_with_telops(profile, samples, bgm_file, tmp_path):
         prompts.append(stdin)
         out = {"title": "軽さで選ぶ NOTE U", "telops": [{"start": 0.3, "end": 2.5, "text": "富士通 NOTE U"},
                                                     {"start": 3.0, "end": 5.5, "text": "約908gの軽さ"}]}
+        if "食い違っていないか確かめて" in stdin:   # テロップと映像の照合
+            out = {"summary": "食い違いはありません。", "fixes": []}
         return ProcResult(0, _json.dumps({"is_error": False, "structured_output": out}), "")
 
     folder, _ = samples
@@ -241,6 +243,8 @@ def test_rerender_changes_colors_without_reediting(profile, samples, bgm_file, t
     def fake_claude(cmd, stdin, cwd, timeout):
         calls.append(1)
         out = {"title": "NOTE U", "telops": [{"start": 0.3, "end": 2.5, "text": "約**908g**の軽さ"}]}
+        if "食い違っていないか確かめて" in stdin:   # テロップと映像の照合
+            out = {"summary": "食い違いはありません。", "fixes": []}
         return ProcResult(0, _json.dumps({"is_error": False, "structured_output": out}), "")
 
     folder, _ = samples
@@ -263,7 +267,7 @@ def test_rerender_changes_colors_without_reediting(profile, samples, bgm_file, t
                        profile=profile, progress=_quiet)
     ass = (pdir / "work" / "telops.ass").read_text(encoding="utf-8-sig")
     assert "\\c&HE9A000&}約908g" in ass and "Style: band_" in ass
-    assert len(calls) == 1                                   # Claude は呼び直していない
+    assert len(calls) == 2                                   # テロップ作りと照合の2回だけ（作り直しでは呼ばない）
     assert exports[0].path.exists() and exports[0].duration == pytest.approx(report.exports[0].duration, abs=0.3)
     saved = load_project(pdir)
     assert saved.settings.telop_style.band_color == "#000000" and saved.telops[0].manual
