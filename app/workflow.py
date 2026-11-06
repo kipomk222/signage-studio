@@ -12,7 +12,6 @@
 from __future__ import annotations
 
 import html
-import os
 import shutil
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -38,6 +37,7 @@ from app.pipeline.silence import STRENGTH, TIGHTEST_MIN_SILENCE, CutResult
 from app.pipeline.telop_render import build_telop_ass, burn_ass
 from app.pipeline.transcribe import Transcriber, Word, hint_text, to_phrases, transcribe
 from app.platform import PlatformProfile, get_profile
+from app.fileops import replace_file
 from app.project import (
     Clip, EditDrop, EditInsert, EditPiece, EditPlan, Project, Stage, create_project, load_project, save_project,
 )
@@ -274,7 +274,7 @@ def _cached_json(path: Path, make):
     path.parent.mkdir(parents=True, exist_ok=True)
     part = path.with_name(path.name + ".part")
     part.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
-    os.replace(part, path)
+    replace_file(part, path)
     return data
 
 
@@ -302,7 +302,7 @@ def prepare_analysis(folder: Path, services: Services, with_words: bool, tight: 
             _step(job, frac(0.0), f"形式をそろえています（{i}/{len(use)}）")
             part = norm.with_name(norm.stem + ".part.mp4")  # できあがってから名前を変える（途中で止めても壊れない）
             normalize_clip(profile, probe_clip(profile, src / c.file), part, fit=project.settings.fit)
-            os.replace(part, norm)
+            replace_file(part, norm)
         duration = duration_of(profile.ffprobe, norm)
         tag = f"{params.noise_db}_{params.min_silence}_{params.pad}"
         keeps = [tuple(r) for r in _cached_json(

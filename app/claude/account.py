@@ -7,7 +7,6 @@
 from __future__ import annotations
 
 import json
-import shutil
 import subprocess
 from dataclasses import dataclass
 
@@ -37,8 +36,9 @@ METHOD_LABELS = {"oauth_token": "Claude のプラン（サブスクリプショ�
                  "api_key": "API キー（従量課金）", "console": "API キー（従量課金）"}
 
 
-def _claude() -> str | None:
-    return shutil.which("claude")
+def _claude() -> list[str] | None:
+    from app.platform import claude_command
+    return claude_command()
 
 
 def status() -> Status:
@@ -46,8 +46,9 @@ def status() -> Status:
     if not path:
         return Status(installed=False)
     try:
-        ver = subprocess.run([path, "--version"], capture_output=True, text=True, timeout=20).stdout.strip()
-        out = subprocess.run([path, "auth", "status", "--json"], capture_output=True, text=True, timeout=20)
+        enc = {"text": True, "encoding": "utf-8", "errors": "replace"}
+        ver = subprocess.run([*path, "--version"], capture_output=True, timeout=20, **enc).stdout.strip()
+        out = subprocess.run([*path, "auth", "status", "--json"], capture_output=True, timeout=20, **enc)
         data = json.loads(out.stdout or "{}")
     except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError) as exc:
         return Status(installed=True, detail=str(exc))
@@ -61,14 +62,14 @@ def login() -> subprocess.Popen:
     path = _claude()
     if not path:
         raise UserError("Claude Code が入っていません。", "先に Claude Code をインストールしてください。")
-    return subprocess.Popen([path, "auth", "login", "--claudeai"], stdin=subprocess.DEVNULL,
+    return subprocess.Popen([*path, "auth", "login", "--claudeai"], stdin=subprocess.DEVNULL,
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
 def logout() -> None:
     path = _claude()
     if path:
-        subprocess.run([path, "auth", "logout"], capture_output=True, timeout=30)
+        subprocess.run([*path, "auth", "logout"], capture_output=True, timeout=30)
 
 
 def connection_test() -> str:

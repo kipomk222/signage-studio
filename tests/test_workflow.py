@@ -160,7 +160,6 @@ def test_inserts_overlay_broll_picture_but_keep_voice(tmp_path):
     import subprocess
     from PIL import Image
     from app.pipeline.edl import PieceLayout, intersect, map_time, place_inserts
-    from app.project import EditInsert, EditPiece, EditPlan
 
     src = tmp_path / "素材"
     make_clip(src / "talk.mp4", 8, speech=SPEECH)

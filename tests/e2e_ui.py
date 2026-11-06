@@ -3,7 +3,7 @@
     1. uv run python tests/ui_server.py <保存先> 8765
     2. python tests/e2e_ui.py <作業フォルダ（demo/素材 と shots/ を置く）> [URL]
 """
-import sys, time, re
+import sys, re
 from playwright.sync_api import sync_playwright, expect
 S = sys.argv[1]; URL = sys.argv[2] if len(sys.argv) > 2 else "http://127.0.0.1:8765"
 SH = f"{S}/shots"

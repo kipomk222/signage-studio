@@ -6,13 +6,12 @@
 
 from __future__ import annotations
 
-import shutil
 import tempfile
 import webbrowser
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from nicegui import app, ui
+from nicegui import app, run, ui
 
 from app.errors import UserError
 from app.pipeline.fonts import FONTS
@@ -41,8 +40,12 @@ def folder_of(pid: str) -> Path:
 
 
 def media_url(path: Path) -> str:
-    rel = path.relative_to(CONFIG.projects).as_posix()
-    return f"/media/{rel}?t={int(path.stat().st_mtime)}" if path.exists() else ""
+    """プロジェクトの中のファイルを画面で見せるための URL（日本語・空白・# などの入った名前でも開けるように）。"""
+    from urllib.parse import quote
+    if not path.exists():
+        return ""
+    rel = quote(path.resolve().relative_to(CONFIG.projects.resolve()).as_posix())
+    return f"/media/{rel}?t={int(path.stat().st_mtime_ns // 1_000_000)}"
 
 
 def open_path(path: Path) -> None:
@@ -88,7 +91,7 @@ def section(title: str, hint: str = ""):
 # =============================================================================
 
 @ui.page("/")
-def home_page() -> None:
+async def home_page() -> None:
     setup_page()
     header()
     with ui.column().classes("page gap-5 p-6"):
@@ -97,11 +100,13 @@ def home_page() -> None:
             with ui.row().classes("warn-box items-start gap-2 w-full"):
                 ui.icon("warning", color="orange")
                 ui.label(f"{what}{how}")
+        login_box = ui.row().classes("warn-box items-center gap-2 w-full")
+        login_box.set_visibility(False)
 
         with ui.row().classes("section items-center justify-between"):
             with ui.column().classes("gap-1"):
                 ui.label("新しい動画を作る").classes("section-title")
-                ui.label("型番を入れると、商品を調べて台本と撮影リストを作ります。").classes("hint")
+                ui.label("型番を入れると、商品を調べて構成と撮影リストを作ります。").classes("hint")
             ui.button("新しく企画する", icon="add", on_click=new_project_dialog).classes("big-button")
 
         with section("続きから", "途中までの動画は自動で保存されています。"):
@@ -120,6 +125,18 @@ def home_page() -> None:
                     ui.badge(r.stage_label).props("outline")
                     ui.button("開く", on_click=lambda r=r: open_project(r.id)).props("flat")
 
+    # Claude にサインインしているか（少し時間がかかるので、画面を出してから確かめる）
+    if CONFIG.services.claude is None and not problems:
+        from app.claude import account
+        await ui.context.client.connected()
+        st = await run.io_bound(account.status)
+        if st.installed and not st.logged_in:
+            with login_box:
+                ui.icon("warning", color="orange")
+                ui.label("Claude にサインインしていません。商品調査や編集の判断に使います。").classes("grow")
+                ui.button("設定の画面でサインイン", icon="login", on_click=lambda: ui.navigate.to("/settings")).props("flat")
+            login_box.set_visibility(True)
+
 
 def startup_problems() -> list[tuple[str, str]]:
     out = []
@@ -127,9 +144,10 @@ def startup_problems() -> list[tuple[str, str]]:
         CONFIG.services.prof()
     except UserError as e:
         out.append((e.what, e.how))
-    if CONFIG.services.claude is None and shutil.which("claude") is None:
+    from app.platform import claude_command
+    if CONFIG.services.claude is None and claude_command() is None:
         out.append(("Claude Code が見つかりません。",
-                    "商品調査やテロップ作りに使います。インストールしてログインしてから、もう一度起動してください。"))
+                    "商品調査や編集の判断に使います。インストールしてから、もう一度起動してください（設定の画面に入れ方の案内があります）。"))
     return out
 
 

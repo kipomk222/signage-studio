@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field, ValidationError, field_validator, model_v
 
 from app.errors import UserError
 from app.pipeline.colors import normalize_color
+from app.fileops import replace_file
 
 SCHEMA_VERSION = 2  # 2: 声の別録り（映像を先に完成させる流れ）
 PROJECT_FILE = "project.json"
@@ -397,7 +398,7 @@ def save_project(folder: Path, project: Project, now: datetime | None = None) ->
             f.write(data)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(tmp_name, folder / PROJECT_FILE)
+        replace_file(tmp_name, folder / PROJECT_FILE)
     except BaseException as exc:
         try:
             os.unlink(tmp_name)

@@ -41,7 +41,10 @@ def _remove_partial(args: list[str]) -> None:
     """途中で止まった FFmpeg の書きかけの出力を消す（次回、壊れたファイルを使わないように）。"""
     out = args[-1] if args else ""
     if Path(args[0]).stem.startswith("ffmpeg") and out not in ("-", "") and not out.startswith("-"):
-        Path(out).unlink(missing_ok=True)
+        try:
+            Path(out).unlink(missing_ok=True)
+        except OSError:  # Windows で画面が開いている途中のファイルは消せない。元の問題を伝える方を優先する
+            pass
 
 
 def ffmpeg_base(ffmpeg: str) -> list[str]:

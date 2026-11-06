@@ -17,7 +17,7 @@ def test_missing_ffmpeg_explains_what_to_do():
     with pytest.raises(SetupError) as e:
         pf.find_ffmpeg(OSKind.WINDOWS, which=lambda _name: None)
     assert "FFmpeg" in e.value.what
-    assert "winget install ffmpeg" in e.value.how
+    assert "winget install Gyan.FFmpeg" in e.value.how
 
 
 def test_parse_encoder_list():
@@ -92,3 +92,43 @@ def test_six_fonts_are_bundled_with_licenses():
     files = sorted(p.name for p in fonts.iterdir() if p.suffix in {".ttf", ".otf"})
     assert len(files) == 6
     assert len(list((fonts / "licenses").glob("OFL_*.txt"))) == 5  # Noto は Bold/Black で1つ
+
+
+# --- Claude Code の呼び出し方 -------------------------------------------------------
+
+def test_claude_command_windows_npm_runs_node_directly(tmp_path):
+    from app.platform import OSKind, claude_command
+    npm = tmp_path / "npm"
+    cli = npm / "node_modules" / "@anthropic-ai" / "claude-code" / "cli.js"
+    cli.parent.mkdir(parents=True)
+    cli.write_text("// cli")
+    (npm / "claude.cmd").write_text("@echo off")
+    which = {"claude": str(npm / "claude.cmd"), "node": r"C:\nodejs\node.exe"}.get
+    assert claude_command(OSKind.WINDOWS, which=which) == [r"C:\nodejs\node.exe", str(cli)]
+
+
+def test_claude_command_native_and_fallback_locations(tmp_path):
+    from app.platform import OSKind, claude_command
+    assert claude_command(OSKind.WINDOWS, which={"claude": r"C:\Users\k\.local\bin\claude.exe"}.get) == \
+        [r"C:\Users\k\.local\bin\claude.exe"]
+    exe = tmp_path / ".local" / "bin" / "claude"          # アプリから起動して PATH にないとき
+    exe.parent.mkdir(parents=True)
+    exe.write_text("")
+    assert claude_command(OSKind.MAC, which=lambda n: None, home=tmp_path) == [str(exe)]
+    assert claude_command(OSKind.MAC, which=lambda n: None, home=tmp_path / "none") is None
+
+
+def test_replace_file_falls_back_to_copy(tmp_path, monkeypatch):
+    import os
+
+    from app import fileops
+    src, dst = tmp_path / "a.part", tmp_path / "a.mp4"
+    src.write_text("new")
+    dst.write_text("old")
+    monkeypatch.setattr(fileops, "WAIT", 0)
+
+    def locked(a, b):  # Windows で再生中のファイルは名前の置き換えができない
+        raise PermissionError("in use")
+    monkeypatch.setattr(os, "replace", locked)
+    fileops.replace_file(src, dst)
+    assert dst.read_text() == "new" and not src.exists()

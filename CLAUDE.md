@@ -9,6 +9,8 @@
 - 開発は「開発段階」の順に進める。各段階はプランモードで計画を出し、承認を得てから実装する。
 - 各段階の終わりに完了条件をテストで確認し、結果を報告して止まる。勝手に次の段階へ進まない。
 - Mac / Windows の差分は `app/platform.py` にだけ書く。他のファイルに OS 判定を書かない。
+- ファイルの置き換えは `app/fileops.replace_file` を使う（Windows で再生中のファイルでも置き換えられる）。
+  外部コマンドの出力は UTF-8 で読む。Claude Code の呼び出し方は `platform.claude_command()` で決める。
 - `assets/bgm/`、`assets/logo/`、`assets/corner_logo/`、`projects/`、`cache/` は Git に含めない（`.gitignore` に入れる）。
 - ユーザーの素材ファイルを削除・上書きしない。素材はプロジェクトフォルダにコピーして使う。
 - 画面の文言・エラーは、動画編集を知らない人でも分かる日本語にする。専門用語を出さない。

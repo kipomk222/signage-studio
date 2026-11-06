@@ -11,13 +11,13 @@ Claude Code を呼び出すたびに、指示書・メモリ・その作業の�
 from __future__ import annotations
 
 import json
-import os
 import re
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
 from app.errors import UserError
+from app.fileops import replace_file
 
 ROOT = Path(__file__).resolve().parents[2]
 HOME = ROOT / "claude_home"
@@ -162,7 +162,7 @@ def _write(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     part = path.with_name(path.name + ".part")
     part.write_text(text, encoding="utf-8")
-    os.replace(part, path)
+    replace_file(part, path)
 
 
 WORKSPACE = Workspace()

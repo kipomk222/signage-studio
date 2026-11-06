@@ -8,7 +8,6 @@
 from __future__ import annotations
 
 import json
-import os
 from datetime import datetime
 from pathlib import Path
 from typing import Literal
@@ -24,6 +23,7 @@ from app.errors import UserError
 from app.pipeline.colors import normalize_color
 from app.pipeline.fonts import FONTS
 from app.project import Price, Project, Scene, Stage, Telop, TelopStyle, load_project, save_project
+from app.fileops import replace_file
 
 CHAT_FILE = "chat.json"
 HISTORY_TURNS = 10
@@ -68,7 +68,7 @@ def save_chat(folder: Path, chat: list[ChatEntry]) -> None:
     part = p.with_name(p.name + ".part")
     part.write_text(json.dumps([c.model_dump(mode="json") for c in chat], ensure_ascii=False, indent=1),
                     encoding="utf-8")
-    os.replace(part, p)
+    replace_file(part, p)
 
 
 # --- Claude に見せる、いまの動画の内容 ---------------------------------------------

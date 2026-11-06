@@ -5,7 +5,7 @@ cd /d "%~dp0"
 where uv > nul 2>&1
 if errorlevel 1 (
   echo 起動に必要な「uv」が見つかりません。
-  echo コマンドプロンプトで「winget install astral-sh.uv」を実行してから、もう一度ダブルクリックしてください。
+  echo コマンドプロンプトで「winget install astral-sh.uv」を実行し、ウィンドウを開き直してから、もう一度ダブルクリックしてください。
   pause
   exit /b 1
 )

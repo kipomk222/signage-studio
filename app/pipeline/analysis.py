@@ -14,6 +14,7 @@ from PIL import Image, ImageDraw, ImageFont
 from app.pipeline.ffmpeg import ffmpeg_base, run
 from app.pipeline.fonts import FONTS_DIR
 from app.platform import PlatformProfile
+from app.fileops import replace_file
 
 TILE_W, TILE_H, COLS = 384, 216, 4
 MAX_FRAMES = 12
@@ -48,5 +49,5 @@ def contact_sheet(profile: PlatformProfile, video: Path, duration: float, dst: P
     dst.parent.mkdir(parents=True, exist_ok=True)
     part = dst.with_name(dst.stem + ".part" + dst.suffix)
     sheet.save(part, quality=85)
-    part.replace(dst)  # できあがってから名前を変える
+    replace_file(part, dst)  # できあがってから名前を変える
     return dst

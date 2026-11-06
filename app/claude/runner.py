@@ -76,10 +76,11 @@ def load_prompt(name: str, **values: str) -> str:
     return text
 
 
-def build_command(claude: str, schema: dict, tools: list[str], system_file: Path | None = None) -> list[str]:
+def build_command(claude: str | list[str], schema: dict, tools: list[str], system_file: Path | None = None) -> list[str]:
     extra = ["--append-system-prompt-file", str(system_file)] if system_file else []
+    head = [claude] if isinstance(claude, str) else list(claude)
     return [
-        claude, "-p",
+        *head, "-p",
         "--output-format", "json",
         "--json-schema", json.dumps(schema, ensure_ascii=False, separators=(",", ":")),
         "--tools", ",".join(tools),          # 空 = ツールを一切使わせない
@@ -110,11 +111,14 @@ class ClaudeCode:
         self.workdir = workdir
         self.workspace = workspace if workspace is not None else WORKSPACE
 
-    def _claude(self) -> str:
-        path = self.claude_path or shutil.which("claude")
-        if not path:
+    def _claude(self) -> list[str]:
+        if self.claude_path:
+            return [self.claude_path]
+        from app.platform import claude_command
+        cmd = claude_command()
+        if not cmd:
             raise ClaudeError(*NOT_FOUND)
-        return path
+        return cmd
 
     def _once(self, prompt: str, schema: dict, tools: list[str], timeout: float,
               files: list[Path] | None = None, kind: str = "") -> dict:

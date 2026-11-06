@@ -12,6 +12,7 @@ from app.pipeline.ffmpeg import duration_of, ffmpeg_base, run
 from app.pipeline.silence import SilenceParams, detect_silences
 from app.platform import PlatformProfile
 from app.project import Scene
+from app.fileops import replace_file
 
 AUDIO_EXTS = {".m4a", ".mp3", ".wav", ".aac", ".aif", ".aiff", ".caf", ".flac", ".ogg", ".opus"}
 EDGE = SilenceParams(noise_db=-40, min_silence=0.25, pad=0.12)
@@ -50,7 +51,7 @@ def prepare_voice(profile: PlatformProfile, src: Path, dst: Path, info: VoiceInf
                 f"loudnorm=I={VOICE_LUFS}:TP=-2:LRA=11,aresample=48000",
          "-ac", "2", "-c:a", "pcm_s16le", str(part)],
         what=f"声のファイル「{src.name}」を読み込めませんでした。")
-    part.replace(dst)
+    replace_file(part, dst)
     return dst
 
 

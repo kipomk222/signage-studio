@@ -4,10 +4,11 @@
 
 ## はじめて使う PC での準備
 
-1. Claude Code をインストールしてログイン
+1. Claude Code をインストールする（https://docs.claude.com/ja/docs/claude-code/setup）。
+   ログインは、ツールの設定の画面（右上の歯車）の「Claude にサインイン」からもできます
 2. uv と FFmpeg を入れる
    - Mac: `brew install uv ffmpeg`
-   - Windows: `winget install astral-sh.uv` と `winget install ffmpeg`
+   - Windows: `winget install astral-sh.uv` と `winget install Gyan.FFmpeg`（入れたあと、コマンドプロンプトを開き直す）
 3. このリポジトリを取り込み、フォルダで `uv sync` を実行
 4. `assets/bgm/` にヨドバシカメラの歌、`assets/logo/` にロゴ PNG（背景透過）を置く（Git には含めない）。
    左上に出すロゴを別の画像にしたいときは `assets/corner_logo/` に置く（空なら `assets/logo/` のロゴを使う）
@@ -48,6 +49,8 @@ uv run pytest
 ```
 uv run python -m app.pipeline.run "D:\素材" --model EPC01A-20BK --out store,youtube
 ```
+
+コマンド版は「撮影時に話す（これまでの方式）」で仕上げます。声を別に録る作り方は画面から使ってください。
 
 - 文字起こし → 型番の補正 → 要点テロップ → 冒頭タイトル・エンドカードまで自動で入ります
   - 商品情報は「保存済み → Web で調査」の順に探します。`--paste ページ.txt` / `--image スクショ.jpg` で商品ページからも作れます

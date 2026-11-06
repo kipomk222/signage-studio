@@ -36,10 +36,14 @@ def show_product(p, info) -> None:
 
 def show_plan(scenes) -> None:
     total = sum(s.seconds for s in scenes)
-    print(f"  台本（場面 {len(scenes)} 個・合計 {total:.0f} 秒）")
+    print(f"  構成（場面 {len(scenes)} 個・合計 {total:.0f} 秒）")
     for s in scenes:
-        print(f"  【{s.title}】{s.seconds:.0f}秒")
-        print(f"    セリフ: {s.script}")
+        how = "顔出しで話す" if s.voice == "talk" else "映像だけ（声はあとで録る）"
+        print(f"  【{s.title}】{s.seconds:.0f}秒　{how}")
+        if s.points:
+            print(f"    伝えること: {s.points}")
+        if s.script:
+            print(f"    セリフ: {s.script}")
         print(f"    撮るカット: {' / '.join(s.shots)}")
 
 

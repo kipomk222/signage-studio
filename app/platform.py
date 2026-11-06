@@ -51,7 +51,7 @@ WHISPER_MODEL: dict[OSKind, str] = {
 
 FFMPEG_INSTALL_HINT: dict[OSKind, str] = {
     OSKind.MAC: "ターミナルで「brew install ffmpeg」を実行してから、もう一度起動してください。",
-    OSKind.WINDOWS: "コマンドプロンプトで「winget install ffmpeg」を実行してから、もう一度起動してください。",
+    OSKind.WINDOWS: "コマンドプロンプトで「winget install Gyan.FFmpeg」を実行し、ウィンドウを開き直してから、もう一度起動してください。",
     OSKind.LINUX: "パッケージマネージャーで ffmpeg を入れてから、もう一度起動してください。",
 }
 
@@ -82,7 +82,7 @@ def list_encoders(ffmpeg: str) -> set[str]:
     """FFmpeg が対応している映像エンコーダ名の一覧。"""
     out = subprocess.run(
         [ffmpeg, "-hide_banner", "-encoders"],
-        capture_output=True, text=True, timeout=30, check=False,
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30, check=False,
     ).stdout
     return parse_encoder_list(out)
 
@@ -164,6 +164,35 @@ def ffmpeg_filter_path(path: Path) -> str:
     text = Path(path).resolve().as_posix()
     text = text.replace("\\", "/").replace(":", "\\:").replace("'", "'\\''")
     return f"'{text}'"
+
+
+def claude_command(os_kind: OSKind | None = None, which: Callable[[str], str | None] = shutil.which,
+                   home: Path | None = None) -> list[str] | None:
+    """Claude Code を呼び出すコマンドの頭の部分（見つからなければ None）。
+
+    - PATH にないとき（アプリから起動したときなど）は、いつもの入れ場所も探す
+    - Windows で npm から入れた claude.cmd は、引数の記号がコマンドプロンプトに解釈されないよう、
+      node で本体（cli.js）を直接動かす
+    """
+    os_kind = os_kind or detect_os()
+    home = home or Path.home()
+    path = which("claude")
+    if not path:
+        names = ["claude.exe"] if os_kind is OSKind.WINDOWS else ["claude"]
+        dirs = [home / ".local" / "bin", home / ".claude" / "local"]
+        if os_kind is OSKind.MAC:
+            dirs += [Path("/opt/homebrew/bin"), Path("/usr/local/bin")]
+        found = [d / n for d in dirs for n in names if (d / n).is_file()]
+        if not found:
+            return None
+        path = str(found[0])
+    if os_kind is OSKind.WINDOWS and path.lower().endswith((".cmd", ".bat")):
+        base = Path(path).parent
+        cli = base / "node_modules" / "@anthropic-ai" / "claude-code" / "cli.js"
+        node = base / "node.exe" if (base / "node.exe").is_file() else which("node")
+        if cli.is_file() and node:
+            return [str(node), str(cli)]
+    return [path]
 
 
 def open_folder_command(path: Path, os_kind: OSKind) -> list[str]:

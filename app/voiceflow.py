@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import html
 import json
-import os
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -58,6 +57,7 @@ from app.project import (
     save_project,
 )
 from app.telopcheck import check_after_telops
+from app.fileops import replace_file
 from app.workflow import (
     ClipData,
     EditResult,
@@ -213,7 +213,7 @@ def render_video(folder: Path, services: Services, job: Job | None = None, resul
             work, progress=lambda f, m: _step(job, 0.6 + 0.35 * f, m))
     except ValueError:
         raise UserError("つなげられるカットが残りませんでした。", "使うカットを増やして、もう一度お試しください。") from None
-    os.replace(base, work / "video.mp4")
+    replace_file(base, work / "video.mp4")
     _save_layouts(_layout_path(folder, "video"), layouts, total, visual_of(layouts, project.edit.pieces))
     res.joined_seconds = total
     project.complete_stage(Stage.MATERIAL)

@@ -135,7 +135,7 @@ def test_errors_are_friendly(tmp_path, response, words):
 
 
 def test_missing_claude_binary(monkeypatch, tmp_path):
-    monkeypatch.setattr("app.claude.runner.shutil.which", lambda _n: None)
+    monkeypatch.setattr("app.platform.claude_command", lambda *a, **k: None)
     with pytest.raises(ClaudeError) as e:
         calls.research_product(ClaudeCode(runner=FakeClaude()), "X", cache_dir=tmp_path)
     assert "インストール" in e.value.how

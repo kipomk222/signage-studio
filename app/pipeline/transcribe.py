@@ -38,16 +38,22 @@ DOWNLOAD_FAILED = ("文字起こし用のデータをダウンロードできま
                    "インターネットにつながっているか確認して、もう一度お試しください（初回のみ数分かかります）。")
 
 
+_MODELS: dict[str, object] = {}  # 読み込んだ文字起こしのモデル（クリップごとに読み直さない）
+
+
 def _faster_whisper(model_name: str) -> Transcriber:
     def run(path: Path, hint: str) -> list[Word]:
         try:
             from faster_whisper import WhisperModel
         except ImportError as exc:
             raise UserError(*MODEL_MISSING) from exc
-        try:
-            model = WhisperModel(model_name, device="cpu", compute_type="int8")
-        except Exception as exc:
-            raise UserError(*DOWNLOAD_FAILED) from exc
+        model = _MODELS.get(model_name)
+        if model is None:
+            try:
+                model = WhisperModel(model_name, device="cpu", compute_type="int8")
+            except Exception as exc:
+                raise UserError(*DOWNLOAD_FAILED) from exc
+            _MODELS[model_name] = model
         segments, _info = model.transcribe(
             str(path), language="ja", word_timestamps=True, vad_filter=True,
             initial_prompt=hint or None, condition_on_previous_text=False,

@@ -31,6 +31,7 @@ from app.claude.schemas import (
 )
 from app.errors import UserError
 from app.project import Price, Product, Scene, Telop, safe_folder_part
+from app.fileops import replace_file
 
 CACHE_DIR = ROOT / "cache" / "products"
 RESEARCH_TOOLS = ["WebSearch", "WebFetch"]
@@ -101,7 +102,7 @@ def _save_cache(path: Path, model_number: str, info: ProductInfo, method: str) -
     fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
-    os.replace(tmp, path)
+    replace_file(tmp, path)
 
 
 def product_from_paste(cc: ClaudeCode, model_number: str, text: str = "", images: list[Path] | None = None,

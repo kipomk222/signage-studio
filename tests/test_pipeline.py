@@ -191,7 +191,7 @@ def test_edit_folder_with_telops(profile, samples, bgm_file, tmp_path):
     import json as _json
     from app.claude.runner import ClaudeCode, ProcResult
     from app.pipeline.run import TelopInputs
-    from app.project import Price, Product, Telop
+    from app.project import Price, Product
     from tests.media import ScriptedTranscriber
 
     product = Product(model_number="FMVU59L2BA", name="富士通 NOTE Uシリーズ", maker="富士通", category="パソコン",
