@@ -125,6 +125,7 @@ def edit_folder(
                         profile=profile or get_profile(), logo=telop.logo if telop else None)
 
     project, folder = create_project(projects_root, model_number)
+    project.plan.voice_mode = "live"  # コマンド1つで仕上げる: 撮影時に話した素材から（声の別録りは画面で）
     if target_seconds:
         project.plan.target_seconds = target_seconds
     project.settings.silence_strength = strength  # type: ignore[assignment]

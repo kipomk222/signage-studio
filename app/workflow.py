@@ -126,9 +126,9 @@ def make_plan_into(folder: Path, services: Services, job: Job | None = None) -> 
     project = load_project(folder)
     if not project.product.name:
         raise UserError("商品情報がまだありません。", "先に商品を調べてください。")
-    _step(job, 0.1, "台本と構成を考えています")
+    _step(job, 0.1, "構成と撮るカットを考えています" if project.separate_voice else "台本と構成を考えています")
     project.plan.scenes = make_plan(services.cc(), project.product, project.plan.target_seconds,
-                                    project.plan.price, project.plan.extra_text)
+                                    project.plan.price, project.plan.extra_text, separate=project.separate_voice)
     project.mark_changed(Stage.PLAN)
     save_project(folder, project)
     return project
@@ -138,7 +138,7 @@ def confirm_plan(folder: Path) -> Path:
     """企画を確定し、撮影リストを書き出す。"""
     project = load_project(folder)
     if not project.plan.scenes:
-        raise UserError("台本がまだありません。", "「台本を作る」を押してください。")
+        raise UserError("構成がまだありません。", "「構成を作る」を押してください。")
     project.plan.confirmed = True
     project.complete_stage(Stage.PLAN)
     save_project(folder, project)
@@ -149,10 +149,17 @@ def write_shooting_list(project: Project, folder: Path) -> Path:
     """撮影リスト（印刷用・スマホ表示用を兼ねた1枚のページ）。"""
     p, total = project.product, sum(s.seconds for s in project.plan.scenes)
     rows = []
+    separate = project.separate_voice
     for i, s in enumerate(project.plan.scenes, 1):
         shots = "".join(f"<li><label><input type='checkbox'> {html.escape(x)}</label></li>" for x in s.shots)
+        if separate and s.voice == "narration":
+            how = '<p class="how quiet">映像だけ撮る（話さない・声はあとで録る）</p>'
+            body = f'<p class="points">伝えること: {html.escape(s.points)}</p>' if s.points else ""
+        else:
+            how = '<p class="how talk">顔を出して、その場で話す</p>' if separate else ""
+            body = f'<p class="script">{html.escape(s.script)}</p>'
         rows.append(f"""<section class="scene"><h2><span>{i}</span>{html.escape(s.title)}<small>{s.seconds:.0f}秒</small></h2>
-<p class="script">{html.escape(s.script)}</p><ul>{shots}</ul></section>""")
+{how}{body}<ul>{shots}</ul></section>""")
     page = f"""<!doctype html><html lang="ja"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1"><title>撮影リスト {html.escape(p.model_number)}</title>
 <style>
@@ -163,6 +170,8 @@ header{{border-bottom:3px solid #1a1a1a;margin-bottom:12px}} h1{{font-size:22px;
 .scene h2 span{{background:#1a1a1a;color:#fff;border-radius:50%;width:28px;height:28px;display:inline-flex;align-items:center;justify-content:center;font-size:15px}}
 .scene h2 small{{margin-left:auto;font-weight:normal;color:#555}}
 .script{{background:#f4f4f4;border-radius:6px;padding:8px 10px;margin:6px 0;font-size:16px}}
+.points{{color:#333;margin:4px 0;font-size:15px}} .how{{display:inline-block;border-radius:999px;padding:2px 10px;margin:2px 0;font-size:13px;font-weight:bold}}
+.quiet{{background:#e8f0fe;color:#1a4fb4}} .talk{{background:#fde8e8;color:#b41a1a}}
 ul{{list-style:none;padding:0;margin:0}} li{{padding:4px 0;font-size:15px}} input{{transform:scale(1.4);margin-right:8px}}
 @media print{{body{{padding:0}} .scene{{border-color:#999}}}}
 </style></head><body><header><h1>撮影リスト　{html.escape(p.name or p.model_number)}</h1>
@@ -359,8 +368,11 @@ def ai_plan(project: Project, data: dict[str, ClipData], services: Services, fix
 @_scoped
 def build_edit(folder: Path, services: Services, with_telops: bool = True, job: Job | None = None,
                ai: bool | None = None) -> EditResult:
-    """素材から、設計図を作って編集する（画面の「編集を始める」）。"""
+    """素材から、設計図を作って編集する（画面の「編集を始める」）。声を別に録る動画は、映像だけを先に作る。"""
     project = load_project(folder)
+    if project.separate_voice:
+        from app.voiceflow import build_video
+        return build_video(folder, services, job=job, ai=ai)
     with_telops = with_telops and bool(project.product.name)
     use_ai = (project.settings.ai_edit if ai is None else ai) and with_telops
     res = EditResult()

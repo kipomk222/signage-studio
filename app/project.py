@@ -16,14 +16,15 @@ from enum import Enum
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, Field, ValidationError, field_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
 from app.errors import UserError
 from app.pipeline.colors import normalize_color
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2  # 2: 声の別録り（映像を先に完成させる流れ）
 PROJECT_FILE = "project.json"
 SUBDIRS = ("素材", "work", "output")
+VOICE_DIR = "声"  # 別録りの声（取り込んだコピー）
 DEFAULT_TARGET_SECONDS = 150  # 標準は2〜3分
 
 
@@ -36,7 +37,9 @@ class ProjectError(UserError):
 class Stage(str, Enum):
     PLAN = "plan"
     MATERIAL = "material"
-    REVIEW = "review"
+    VIDEO = "video"          # 映像の編集（声の別録りのとき）
+    NARRATION = "narration"  # 台本・録った声・尺合わせ（声の別録りのとき）
+    REVIEW = "review"        # 仕上げ（テロップ・色・BGM）
     EXPORT = "export"
     DONE = "done"
 
@@ -49,11 +52,14 @@ class Stage(str, Enum):
         return STAGE_ORDER.index(self)
 
 
-STAGE_ORDER = [Stage.PLAN, Stage.MATERIAL, Stage.REVIEW, Stage.EXPORT, Stage.DONE]
+STAGE_ORDER = [Stage.PLAN, Stage.MATERIAL, Stage.VIDEO, Stage.NARRATION, Stage.REVIEW, Stage.EXPORT, Stage.DONE]
+LIVE_SKIP = (Stage.VIDEO, Stage.NARRATION)  # 撮影時に話す（これまでの方式）では使わない段階
 STAGE_LABELS = {
     Stage.PLAN: "企画",
     Stage.MATERIAL: "素材",
-    Stage.REVIEW: "確認",
+    Stage.VIDEO: "映像",
+    Stage.NARRATION: "ナレーション",
+    Stage.REVIEW: "仕上げ",
     Stage.EXPORT: "書き出し",
     Stage.DONE: "完了",
 }
@@ -80,12 +86,15 @@ class Price(BaseModel):
 class Scene(BaseModel):
     id: str
     title: str
-    script: str = ""
-    shots: list[str] = Field(default_factory=list)
+    script: str = ""        # 話すセリフ（顔出しの場面）／ナレーション（映像の完成後に作る）
+    shots: list[str] = Field(default_factory=list)  # 撮るカット（並べる順。「（約3秒）」のように秒数も書く）
     seconds: float = 0
+    voice: Literal["talk", "narration"] = "narration"  # 顔出しでその場で話す／後から声を録る
+    points: str = ""        # この場面で伝えること（台本を作る前の要点）
 
 
 class Plan(BaseModel):
+    voice_mode: Literal["separate", "live"] = "separate"  # 声は別録り（標準）／撮影時に話す（これまでの方式）
     target_seconds: int = DEFAULT_TARGET_SECONDS
     scenes: list[Scene] = Field(default_factory=list)
     price: Price = Field(default_factory=Price)
@@ -118,6 +127,10 @@ class EditPiece(BaseModel):
     scene_id: str | None = None
     reason: str = ""
     enabled: bool = True
+    mute: bool = False     # 元の音を消す（話していない映像のカット）。無音カットもしない
+    speed: float = 1.0     # 1より大きいとゆっくり再生（尺合わせで、最大 1.25）
+    hold: float = 0.0      # 最後の絵を止めて伸ばす秒数（尺合わせの最後の手段）
+    shows: str = ""        # 映っているもの（ナレーション台本づくりに使う）
 
 
 class EditInsert(BaseModel):
@@ -147,6 +160,21 @@ class EditPlan(BaseModel):
     pieces: list[EditPiece] = Field(default_factory=list)
     inserts: list[EditInsert] = Field(default_factory=list)
     dropped: list[EditDrop] = Field(default_factory=list)
+    spares: list[EditPiece] = Field(default_factory=list)  # 予備のカット（尺合わせで映像が足りないときに足す）
+
+
+class VoiceTake(BaseModel):
+    """別録りの声のファイル1つ。"""
+
+    file: str                 # 声/ からの相対パス
+    scene_id: str | None = None
+    assigned_by: Literal["", "name", "claude", "manual"] = ""  # 場面を決めた方法
+    reason: str = ""
+    use: bool = True          # 同じ場面の録り直しのうち、使うもの
+    duration: float = 0       # 前後の無音を切ったあとの長さ
+    trim_start: float = 0     # 前後の無音を切る位置
+    trim_end: float = 0
+    transcript: str = ""
 
 
 class Telop(BaseModel):
@@ -213,22 +241,47 @@ class Project(BaseModel):
     plan: Plan = Field(default_factory=Plan)
     clips: list[Clip] = Field(default_factory=list)
     edit: EditPlan | None = None
+    voices: list[VoiceTake] = Field(default_factory=list)
+    fitted: list[EditPiece] = Field(default_factory=list)  # 声に合わせて長さを調整したあとのカット（仕上げに使う）
+    fit_notes: list[str] = Field(default_factory=list)
     telops: list[Telop] = Field(default_factory=list)
     settings: Settings = Field(default_factory=Settings)
     history: list[HistoryEntry] = Field(default_factory=list)
 
+    @model_validator(mode="before")
+    @classmethod
+    def _upgrade(cls, data):
+        """古い project.json（話しながら撮る方式）をそのまま読めるようにする。"""
+        if isinstance(data, dict) and data.get("schema_version", SCHEMA_VERSION) < 2:
+            data = dict(data)
+            plan = dict(data.get("plan") or {})
+            plan.setdefault("voice_mode", "live")
+            plan["scenes"] = [{**sc, "voice": sc.get("voice", "talk")} for sc in plan.get("scenes", [])]
+            data["plan"], data["schema_version"] = plan, SCHEMA_VERSION
+        return data
+
     @property
     def model_number(self) -> str:
         return self.product.model_number
+
+    @property
+    def separate_voice(self) -> bool:
+        return self.plan.voice_mode == "separate"
+
+    @property
+    def flow(self) -> list[Stage]:
+        """この動画で進む段階の順番。"""
+        return [s for s in STAGE_ORDER if self.separate_voice or s not in LIVE_SKIP]
 
     def complete_stage(self, stage: Stage, now: datetime | None = None) -> None:
         """段階を終えたことを記録し、次の段階へ進める。"""
         self.history.append(HistoryEntry(stage=stage, completed_at=now or datetime.now()))
         if stage in self.stale:
             self.stale.remove(stage)
-        next_index = min(stage.index + 1, len(STAGE_ORDER) - 1)
-        if STAGE_ORDER[next_index].index > self.stage.index:
-            self.stage = STAGE_ORDER[next_index]
+        later = [s for s in self.flow if s.index > stage.index]
+        nxt = later[0] if later else Stage.DONE
+        if nxt.index > self.stage.index:
+            self.stage = nxt
 
     def mark_changed(self, stage: Stage) -> list[Stage]:
         """前の段階を直したとき、それより後で既に進んでいた段階を「再作成が必要」にする。
@@ -236,7 +289,7 @@ class Project(BaseModel):
         手で直したテロップ（manual=True）はここでは消さない。戻り値は新たに印を付けた段階。
         """
         marked: list[Stage] = []
-        for later in STAGE_ORDER[stage.index + 1:]:
+        for later in [s for s in self.flow if s.index > stage.index]:
             if later is Stage.DONE:
                 continue
             if later.index <= self.stage.index and later not in self.stale:

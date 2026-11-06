@@ -8,18 +8,19 @@ from __future__ import annotations
 
 import json
 import threading
+from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Iterator
 
 ROOT = Path(__file__).resolve().parents[2]
 LOG = ROOT / "cache" / "usage.jsonl"
 _local = threading.local()
 _lock = threading.Lock()
 
-KIND_LABELS = {"research": "商品調査", "extract": "商品ページの整理", "plan": "台本づくり", "edit": "編集の判断",
+KIND_LABELS = {"research": "商品調査", "extract": "商品ページの整理", "plan": "構成づくり", "edit": "編集の判断",
+               "narration": "ナレーション台本", "assign": "声の振り分け",
                "telop": "テロップ", "youtube": "YouTube説明文", "consult": "相談", "test": "接続テスト"}
 
 

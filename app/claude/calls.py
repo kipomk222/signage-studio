@@ -3,20 +3,32 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
 import os
 import tempfile
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
 from app.claude.images import IMAGE_EXTS, prepare_images
 from app.claude.runner import ROOT, ClaudeCode, load_prompt
-from app.errors import UserError
 from app.claude.schemas import (
-    AiEdit, make_edit_check,
-    TELOP_MAX_CHARS, TITLE_MAX_CHARS, PlanOut, ProductInfo, TelopsOut, YoutubeOut,
-    check_product, check_youtube, tidy_pasted_sources, make_plan_check, make_telop_check, scenes_budget,
+    TELOP_MAX_CHARS,
+    TITLE_MAX_CHARS,
+    AiEdit,
+    AiVideoEdit,
+    PlanOut,
+    ProductInfo,
+    TelopsOut,
+    YoutubeOut,
+    check_product,
+    check_youtube,
+    make_edit_check,
+    make_plan_check,
+    make_telop_check,
+    scenes_budget,
+    tidy_pasted_sources,
 )
+from app.errors import UserError
 from app.project import Price, Product, Scene, Telop, safe_folder_part
 
 CACHE_DIR = ROOT / "cache" / "products"
@@ -126,12 +138,14 @@ def product_from_paste(cc: ClaudeCode, model_number: str, text: str = "", images
 # --- 企画 ---------------------------------------------------------------------
 
 def make_plan(cc: ClaudeCode, product: Product, target_seconds: int, price: Price,
-              extra_text: str = "") -> list[Scene]:
+              extra_text: str = "", separate: bool = True) -> list[Scene]:
+    """構成を作る。separate=True（声は別録り）なら、説明の場面は「伝えること」と「撮るカット」だけ。"""
     budget = scenes_budget(target_seconds)
-    prompt = load_prompt("plan", product=product_text(product), budget_seconds=f"{budget:.0f}",
-                         price=price_text(price), extra=extra_text.strip() or "なし")
-    out = cc.ask(prompt, PlanOut, timeout=WRITE_TIMEOUT, check=make_plan_check(target_seconds), kind="plan")
-    return [Scene(id=f"s{i}", title=s.title, script=s.script, shots=s.shots, seconds=s.seconds)
+    prompt = load_prompt("plan" if separate else "plan_live", product=product_text(product),
+                         budget_seconds=f"{budget:.0f}", price=price_text(price), extra=extra_text.strip() or "なし")
+    out = cc.ask(prompt, PlanOut, timeout=WRITE_TIMEOUT, check=make_plan_check(target_seconds, separate), kind="plan")
+    return [Scene(id=f"s{i}", title=s.title, script=s.script.strip() if (s.voice == "talk" or not separate) else "",
+                  shots=s.shots, seconds=s.seconds, voice=s.voice if separate else "talk", points=s.points.strip())
             for i, s in enumerate(out.scenes, 1)]
 
 
@@ -208,3 +222,68 @@ def decide_edit(cc: ClaudeCode, product: Product, scenes: list[Scene], budget: f
                             phrases={c.file: c.phrases for c in clips})
     return cc.ask(prompt, AiEdit, tools=["Read"] if sheets else [], files=sheets, timeout=EDIT_TIMEOUT,
                   check=check, kind="edit")
+
+
+# --- 映像を先に作る（声は別録り）------------------------------------------------------
+
+def plan_scenes_text(scenes: list[Scene]) -> str:
+    out = []
+    for s in scenes:
+        kind = "talk（顔出しでその場で話す）" if s.voice == "talk" else "narration（映像だけ・声はあとで録る）"
+        line = f"- {s.id}「{s.title}」{kind} 予定 {s.seconds:.0f}秒"
+        if s.points:
+            line += f"\n  伝えること: {s.points}"
+        if s.voice == "talk" and s.script:
+            line += f"\n  話すセリフ: {s.script}"
+        if s.shots:
+            line += "\n  撮るカット: " + " / ".join(s.shots)
+        out.append(line)
+    return "\n".join(out) or "（構成なし）"
+
+
+def decide_video(cc: ClaudeCode, product: Product, scenes: list[Scene], clips: list[ClipBrief]) -> AiVideoEdit:
+    """映像だけを先に組み立てる設計図を作ってもらう（声は別録り）。"""
+    from app.claude.schemas import make_video_check
+    sheets = [c.sheet for c in clips if c.sheet and c.sheet.exists()]
+    prompt = load_prompt("edit_video", product=product_text(product), scenes=plan_scenes_text(scenes),
+                         clips=clips_text(clips),
+                         sheets="\n".join(f"- {p.name}（{p.stem.removeprefix('sheet_')}）" for p in sheets) or "（なし）")
+    check = make_video_check({c.file: c.duration for c in clips}, [(s.id, s.voice, s.seconds) for s in scenes])
+    return cc.ask(prompt, AiVideoEdit, tools=["Read"] if sheets else [], files=sheets, timeout=EDIT_TIMEOUT,
+                  check=check, kind="edit")
+
+
+@dataclass
+class SceneCuts:
+    """台本を作るときに渡す、完成した映像の1場面分。"""
+
+    scene: Scene
+    seconds: float
+    cuts: list[tuple[float, float, str]]   # (場面の始まりからの秒, 終わり, 映っているもの)
+
+
+def write_narration(cc: ClaudeCode, product: Product, scenes: list[SceneCuts], price: Price,
+                    extra_text: str = "") -> dict[str, str]:
+    """完成した映像の場面ごとの長さとカットに合わせて、ナレーションの台本を作る。{場面ID: 台本}"""
+    from app.claude.schemas import NarrationOut, make_narration_check
+    blocks = []
+    for sc in scenes:
+        cuts = "\n".join(f"  {a:.1f}〜{b:.1f}秒: {shows or '（説明なし）'}" for a, b, shows in sc.cuts)
+        blocks.append(f"## {sc.scene.id}「{sc.scene.title}」映像 {sc.seconds:.1f}秒\n"
+                      f"伝えること: {sc.scene.points or '（なし）'}\n{cuts}")
+    prompt = load_prompt("narration", product=product_text(product), price=price_text(price),
+                         extra=extra_text.strip() or "なし", scenes="\n\n".join(blocks))
+    out = cc.ask(prompt, NarrationOut, timeout=WRITE_TIMEOUT, kind="narration",
+                 check=make_narration_check({sc.scene.id: sc.seconds for sc in scenes}))
+    return {x.scene_id: x.script.strip() for x in out.scenes}
+
+
+def assign_voices(cc: ClaudeCode, scenes: list[Scene], files: list[tuple[str, float, str]]) -> dict[str, tuple[str, str]]:
+    """録った声のファイルを、中身で場面に振り分けてもらう。files: (ファイル名, 秒, 文字起こし)。
+    戻り値 {ファイル名: (場面ID または "", 理由)}"""
+    from app.claude.schemas import AssignOut, make_assign_check
+    scene_lines = "\n".join(f"- {s.id}「{s.title}」: {s.script or s.points}" for s in scenes)
+    file_lines = "\n".join(f"- {name}（{sec:.1f}秒）: {text or '（聞き取れず）'}" for name, sec, text in files)
+    out = cc.ask(load_prompt("assign", scenes=scene_lines, files=file_lines), AssignOut, timeout=WRITE_TIMEOUT,
+                 kind="assign", check=make_assign_check({f for f, _, _ in files}, {s.id for s in scenes}))
+    return {a.file: (a.scene_id, a.reason) for a in out.assignments}

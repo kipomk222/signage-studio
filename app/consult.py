@@ -28,7 +28,8 @@ from app.project import Price, Project, Scene, Stage, Telop, TelopStyle, load_pr
 CHAT_FILE = "chat.json"
 HISTORY_TURNS = 10
 MAX_MESSAGE = 4000
-PAGE_LABELS = {"plan": "企画", "material": "素材", "review": "確認", "export": "書き出し"}
+PAGE_LABELS = {"plan": "企画", "material": "素材", "video": "映像", "narration": "ナレーション",
+               "review": "仕上げ", "export": "書き出し"}
 NEXT_LABELS = {"rebuild": "作り直し", "preview": "プレビュー", "none": ""}
 
 
@@ -88,7 +89,12 @@ def context_text(folder: Path, project: Project) -> str:
            f"目標の長さ: {plan.target_seconds}秒 / 価格: {price_text(plan.price)} / "
            f"追加で入れたい情報: {plan.extra_text.strip() or 'なし'}",
            "## 台本の場面"]
-    out += [f"{i}. 「{sc.title}」{sc.seconds:.0f}秒: {sc.script}" + (f"（撮るカット: {' / '.join(sc.shots)}）" if sc.shots else "")
+    sep = project.separate_voice
+    out.insert(4, "声の録り方: " + ("別に録る（映像を先に完成させ、台本を作ってから録る）" if sep else "撮影のときに話す"))
+    out += [f"{i}. 「{sc.title}」{sc.seconds:.0f}秒"
+            + (("［顔出しで話す］" if sc.voice == "talk" else "［映像だけ・声はあとで録る］") if sep else "")
+            + (f" 伝えること: {sc.points}" if sc.points else "") + f" 台本: {sc.script or '（まだ）'}"
+            + (f"（撮るカット: {' / '.join(sc.shots)}）" if sc.shots else "")
             for i, sc in enumerate(plan.scenes)] or ["（まだありません）"]
     if project.clips:
         out.append("## 素材")
@@ -107,6 +113,11 @@ def context_text(folder: Path, project: Project) -> str:
             out.append("## 切った部分")
             out += [f"{i}. {x.clip} {x.start:.1f}-{x.end:.1f}秒（{x.reason}）"
                     f"{_clip_say(folder, project, x.clip, x.start, x.end)}" for i, x in enumerate(e.dropped)]
+    if project.voices:
+        out.append("## 録った声（番号は 0 から）")
+        names = {sc.id: f"{i}. {sc.title}" for i, sc in enumerate(plan.scenes)}
+        out += [f"{i}. {v.file}（{v.duration:.1f}秒）→ 場面 {names.get(v.scene_id or '', 'なし')}"
+                f"{'（使う）' if v.use else '（使わない）'}: {v.transcript[:60]}" for i, v in enumerate(project.voices)]
     out.append(f"## 冒頭タイトル\n{project.title or '（まだありません）'}")
     out.append("## テロップ（編集後の動画の秒。冒頭タイトルの分は含まない）")
     out += [f"{i}. {t.start:.1f}-{t.end:.1f}: {t.text.replace(chr(10), '／')}"
@@ -196,6 +207,8 @@ def apply_to(project: Project, changes: list[ConsultChange], folder: Path | None
             a = ch.action
             if a in ("scene_update", "scene_delete"):
                 obj = _pick(plan.scenes, ch, "場面")
+            elif a == "voice_assign":
+                obj = _pick(project.voices, ch, "録った声")
             elif a in ("piece_update", "piece_move", "insert_update", "drop_restore"):
                 if edit is None:
                     raise _Problem("まだ編集していないので、使う部分・差し込み・切った部分は変えられません")
@@ -212,6 +225,7 @@ def apply_to(project: Project, changes: list[ConsultChange], folder: Path | None
     if problems:
         raise _Problem("\n".join(problems))
 
+    chosen: list = []  # 相談で選び直した声（同じ場面ではこちらを使う）
     owners = [(ins, edit.pieces[ins.piece]) for ins in edit.inserts
               if 0 <= ins.piece < len(edit.pieces)] if edit else []
     moves, restores, deletes, adds = [], [], [], []
@@ -220,12 +234,28 @@ def apply_to(project: Project, changes: list[ConsultChange], folder: Path | None
     for ch, obj in targets:
         try:
             a = ch.action
-            if a == "scene_update":
-                f = _fields(ch, {"title", "script", "seconds", "shots"})
+            if a == "voice_assign":
+                f = _fields(ch, {"scene", "use"})
+                if "scene" in f:
+                    if str(f["scene"]).strip() in ("", "-1", "なし"):
+                        obj.scene_id, obj.use = None, False  # type: ignore[union-attr]
+                    else:
+                        k = int(_num(f["scene"], "場面の番号", 0, len(plan.scenes) - 1))
+                        if plan.scenes[k].voice != "narration":
+                            raise _Problem("声を割り当てられるのは、声をあとで録る場面だけです")
+                        obj.scene_id, obj.use = plan.scenes[k].id, True  # type: ignore[union-attr]
+                    obj.assigned_by = "manual"  # type: ignore[union-attr]
+                chosen.append(obj)
+                if "use" in f:
+                    obj.use = _bool(f["use"], "use")  # type: ignore[union-attr]
+                    obj.assigned_by = "manual"  # type: ignore[union-attr]
+                touched.add(Stage.NARRATION)
+            elif a == "scene_update":
+                f = _fields(ch, {"title", "script", "seconds", "shots", "points", "voice"})
                 _scene_fields(obj, f)  # type: ignore[arg-type]
                 touched.add(Stage.PLAN)
             elif a == "scene_add":
-                f = _fields(ch, {"title", "script", "seconds", "shots"})
+                f = _fields(ch, {"title", "script", "seconds", "shots", "points", "voice"})
                 if not f.get("title", "").strip():
                     raise _Problem("足す場面の title がありません")
                 used = {s.id for s in plan.scenes}
@@ -333,6 +363,13 @@ def apply_to(project: Project, changes: list[ConsultChange], folder: Path | None
         else:
             project.telops.append(obj)
     project.telops.sort(key=lambda t: t.start)
+    used: set[str] = set()
+    order = [v for v in chosen if v.use] + [v for v in reversed(project.voices) if not any(v is c for c in chosen)]
+    for v in order:   # 同じ場面で「使う」は1つだけ（相談で選んだ方を優先）
+        if v.use and v.scene_id:
+            if v.scene_id in used:
+                v.use = False
+            used.add(v.scene_id)
     if edit is not None and not any(p.enabled for p in edit.pieces):
         raise _Problem("使う部分がすべて「使わない」になります。1つ以上は残してください")
     return sorted(touched, key=lambda s: s.index)
@@ -347,6 +384,12 @@ def _scene_fields(sc: Scene, f: dict[str, str]) -> None:
         sc.seconds = _num(f["seconds"], "場面の秒数", 1, 600)
     if "shots" in f:
         sc.shots = [x.strip(" ・-") for x in f["shots"].replace("／", "\n").splitlines() if x.strip(" ・-")]
+    if "points" in f:
+        sc.points = f["points"].strip()
+    if "voice" in f:
+        if f["voice"] not in ("talk", "narration"):
+            raise _Problem("voice は talk か narration にしてください")
+        sc.voice = f["voice"]  # type: ignore[assignment]
 
 
 def _telop_fields(t: Telop, f: dict[str, str]) -> None:

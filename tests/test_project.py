@@ -91,6 +91,7 @@ def test_list_is_newest_first_and_marks_broken(tmp_path):
 
 def test_stage_progress_and_stale_marking(tmp_path):
     project, folder = create_project(tmp_path, "ABC-123")
+    project.plan.voice_mode = "live"   # 撮影時に話す方式: 映像・ナレーションの段階はない
     now = datetime(2026, 11, 5, 10, 0)
     project.complete_stage(Stage.PLAN, now)
     project.complete_stage(Stage.MATERIAL, now)
@@ -110,6 +111,29 @@ def test_stage_progress_and_stale_marking(tmp_path):
 
     save_project(folder, project)
     assert load_project(folder).stale == [Stage.REVIEW, Stage.EXPORT]
+
+
+def test_separate_voice_flow_stages(tmp_path):
+    project, folder = create_project(tmp_path, "ABC-123")
+    assert project.separate_voice and Stage.NARRATION in project.flow
+    now = datetime(2026, 11, 5, 10, 0)
+    for st in (Stage.PLAN, Stage.MATERIAL, Stage.VIDEO, Stage.NARRATION):
+        project.complete_stage(st, now)
+    assert project.stage is Stage.REVIEW
+    assert project.mark_changed(Stage.VIDEO) == [Stage.NARRATION, Stage.REVIEW]
+
+
+def test_old_project_json_reads_as_live(tmp_path):
+    import json
+    project, folder = create_project(tmp_path, "OLD-1")
+    data = json.loads((folder / "project.json").read_text(encoding="utf-8"))
+    data["schema_version"] = 1
+    data["plan"].pop("voice_mode")
+    data["plan"]["scenes"] = [{"id": "s1", "title": "導入", "script": "こんにちは", "shots": [], "seconds": 5}]
+    (folder / "project.json").write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    old = load_project(folder)
+    assert not old.separate_voice and old.plan.scenes[0].voice == "talk" and old.schema_version == 2
+    assert Stage.VIDEO not in old.flow
 
 
 def test_early_change_does_not_mark_unreached_stages(tmp_path):

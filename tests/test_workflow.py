@@ -61,6 +61,7 @@ def setup(tmp_path_factory):
                                "こちらは富士通の", "ノートパソコンです",
                                "ぜひ売り場で", "お試しください", "よろしくお願いします"]))
     project, folder = wf.start_project("FMVU59L2BA", root)
+    project.plan.voice_mode = "live"   # 撮影時に話す（これまでの方式）
     project.product = Product(model_number="FMVU59L2BA", name="富士通 NOTE U", category="パソコン")
     project.plan.scenes = SCENES
     save_project(folder, project)
@@ -130,7 +131,7 @@ def test_import_edit_preview_export(setup):
 def test_steps_explain_what_is_missing(tmp_path):
     project, folder = wf.start_project("X-1", tmp_path)
     services = wf.Services(profile=get_profile())
-    with pytest.raises(UserError, match="台本"):
+    with pytest.raises(UserError, match="構成"):
         wf.confirm_plan(folder)
     with pytest.raises(UserError, match="商品情報"):
         wf.make_plan_into(folder, services)
@@ -169,6 +170,7 @@ def test_inserts_overlay_broll_picture_but_keep_voice(tmp_path):
     services = wf.Services(claude=ClaudeCode(claude_path="claude", runner=FakeClaude(edit)), profile=get_profile(),
                            transcriber=ScriptedTranscriber(["説明です"]))
     project, folder = wf.start_project("X-1", tmp_path / "p")
+    project.plan.voice_mode = "live"
     project.product = Product(model_number="X-1", name="テスト")
     project.plan.scenes = SCENES[:1]
     save_project(folder, project)

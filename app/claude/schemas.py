@@ -62,7 +62,9 @@ def tidy_pasted_sources(p: ProductInfo) -> ProductInfo:
 
 class SceneOut(_Strict):
     title: str
-    script: str
+    voice: Literal["talk", "narration"]   # 顔出しでその場で話す／後から声を録る
+    points: str                           # この場面で伝えること
+    script: str                           # 話すセリフ（ナレーションの場面は、映像の完成後に作るので空）
     shots: list[str]
     seconds: float
 
@@ -76,7 +78,7 @@ def scenes_budget(target_seconds: int) -> float:
     return target_seconds - TITLE_SECONDS - END_CARD_SECONDS
 
 
-def make_plan_check(target_seconds: int):
+def make_plan_check(target_seconds: int, separate: bool = False):
     budget = scenes_budget(target_seconds)
 
     def check(p: PlanOut) -> list[str]:
@@ -84,11 +86,24 @@ def make_plan_check(target_seconds: int):
         total = sum(s.seconds for s in p.scenes)
         if not budget * (1 - PLAN_TOLERANCE) <= total <= budget * (1 + PLAN_TOLERANCE):
             problems.append(f"場面の秒数の合計を {budget:.0f} 秒前後にしてください（今は {total:.0f} 秒）。")
-        if len(p.scenes) < 4:
-            problems.append("場面は4つ以上にしてください。")
+        if len(p.scenes) < (5 if separate else 4):
+            problems.append(f"場面は{5 if separate else 4}つ以上にしてください。")
+        if not separate:
+            for i, s in enumerate(p.scenes, 1):
+                if s.seconds <= 0 or not s.script.strip() or not s.shots:
+                    problems.append(f"場面{i}に秒数・台本・撮るカットを入れてください。")
+            return problems
+        if p.scenes and (p.scenes[0].voice != "talk" or p.scenes[-1].voice != "talk"):
+            problems.append('最初（あいさつ）と最後（店舗案内）の場面は voice="talk" にしてください。')
+        if sum(s.voice == "talk" for s in p.scenes) > 2:
+            problems.append('voice="talk" は最初と最後の2場面だけにしてください。')
         for i, s in enumerate(p.scenes, 1):
-            if s.seconds <= 0 or not s.script.strip() or not s.shots:
-                problems.append(f"場面{i}に秒数・台本・撮るカットを入れてください。")
+            if s.seconds <= 0 or not s.shots or not s.points.strip():
+                problems.append(f"場面{i}に秒数・伝えること・撮るカットを入れてください。")
+            if s.voice == "talk" and not s.script.strip():
+                problems.append(f"場面{i}（顔出しで話す場面）にセリフを入れてください。")
+            if s.voice == "narration" and len(s.shots) < 2:
+                problems.append(f"場面{i}の撮るカットを3〜5個にしてください。")
         return problems
 
     return check
@@ -119,7 +134,7 @@ def make_telop_check(duration: float, model_number: str = ""):
         problems = []
         if not t.title.strip() or telop_length(t.title) > TITLE_MAX_CHARS:
             problems.append(f"title は {TITLE_MAX_CHARS} 文字以内の見出しにしてください。")
-        squash = lambda x: x.replace("-", "").replace(" ", "").lower()  # noqa: E731
+        squash = lambda x: x.replace("-", "").replace(" ", "").lower()
         if model_number and squash(model_number) in squash(t.title):
             problems.append(f"title には型番（{model_number}）を入れないでください。")
         if not t.telops:
@@ -300,12 +315,155 @@ def _soft_problems(e: AiEdit, durations: dict[str, float], scene_ids: set[str]) 
     return out
 
 
+# --- 映像を先に作る（声は別録り）----------------------------------------------------
+
+class AiCut(_Strict):
+    clip: str
+    start: float
+    end: float
+    scene_id: str
+    talk: bool       # 顔出しでその場で話しているカット（音を使う）
+    shows: str       # 映っているもの（例「ペンで画面に書く手元」）
+    reason: str
+
+
+class AiVideoEdit(_Strict):
+    summary: str
+    cuts: list[AiCut]      # 並べる順
+    spares: list[AiCut]    # 予備のカット（声が長くて映像が足りないときに足す）
+    dropped: list[AiDrop]  # 使わなかった話している部分（言い直しなど）
+
+
+CUT_MIN, CUT_MAX = 1.0, 8.0
+SCENE_FIT = (0.6, 1.5)   # 説明の場面の映像の長さ ÷ 予定の秒数（1回だけ指摘）
+
+
+def make_video_check(durations: dict[str, float], scenes: list[tuple[str, str, float]]):
+    """scenes: (場面ID, "talk"/"narration", 予定の秒数) を並べる順に。"""
+    order = {sid: i for i, (sid, _, _) in enumerate(scenes)}
+    voice = {sid: v for sid, v, _ in scenes}
+    nudged = {"done": False}
+
+    def cut_problems(label: str, i: int, c: AiCut) -> list[str]:
+        out = []
+        d = durations.get(c.clip)
+        if d is None:
+            return [f"{label}[{i}] の clip「{c.clip}」はありません。一覧のファイル名を使ってください。"]
+        if not 0 <= c.start < c.end <= d + 0.05:
+            out.append(f"{label}[{i}] の時刻 {c.start}〜{c.end} が「{c.clip}」の長さ（{d:.1f}秒）の範囲外です。")
+        if c.scene_id not in order:
+            out.append(f"{label}[{i}] の scene_id「{c.scene_id}」は構成にありません。")
+        elif c.talk and voice[c.scene_id] != "talk":
+            out.append(f"{label}[{i}] は話しているカットですが、場面 {c.scene_id} は声をあとで録る場面です。映像だけのカットにしてください。")
+        elif not c.talk and not CUT_MIN <= c.end - c.start <= CUT_MAX:
+            out.append(f"{label}[{i}] の長さは {CUT_MIN:.0f}〜{CUT_MAX:.0f} 秒にしてください。")
+        return out
+
+    def check(e: AiVideoEdit) -> list[str]:
+        problems: list[str] = []
+        if not e.cuts:
+            return ["cuts が空です。並べるカットを選んでください。"]
+        for i, c in enumerate(e.cuts):
+            problems += cut_problems("cuts", i, c)
+        for i, c in enumerate(e.spares):
+            problems += cut_problems("spares", i, c)
+        seq = [order.get(c.scene_id, -1) for c in e.cuts]
+        if seq != sorted(seq):
+            problems.append("cuts は構成の場面の順に並べてください。")
+        if problems or nudged["done"]:
+            return problems
+        nudged["done"] = True
+        soft = []
+        have = {c.scene_id for c in e.cuts}
+        if missing := [sid for sid, _, _ in scenes if sid not in have]:
+            soft.append(f"場面 {', '.join(missing)} にカットがありません。合う素材があれば入れてください"
+                        "（素材がないときだけ省き、summary にそう書く）。")
+        for sid, v, sec in scenes:
+            if v != "narration" or sid not in have or sec <= 0:
+                continue
+            total = sum(c.end - c.start for c in e.cuts if c.scene_id == sid)
+            lo, hi = SCENE_FIT
+            if not lo * sec <= total <= hi * sec:
+                soft.append(f"場面 {sid} の映像が {total:.0f} 秒です。予定の {sec:.0f} 秒に近づけてください"
+                            "（カットの数や長さで調整）。")
+        if not e.spares:
+            soft.append("spares（予備のカット）がありません。声が長くなったときに足せるよう、使わなかった映像から選んでください。")
+        return soft
+
+    return check
+
+
+# --- ナレーションの台本 --------------------------------------------------------------
+
+class NarrationLine(_Strict):
+    scene_id: str
+    script: str
+
+
+class NarrationOut(_Strict):
+    scenes: list[NarrationLine]
+
+
+CHARS_PER_SEC = (4.0, 6.5)   # 読む速さの目安（1秒あたりの文字数）
+VOICE_MARGIN = 0.8           # 声の前後に空ける間（秒）
+
+
+def script_chars(text: str) -> int:
+    return len([c for c in text if not c.isspace() and c not in "、。，．・「」『』！？!?…ー―-"])
+
+
+def make_narration_check(seconds: dict[str, float]):
+    nudged = {"done": False}
+
+    def check(o: NarrationOut) -> list[str]:
+        got = {x.scene_id: x for x in o.scenes}
+        problems = [f"場面 {sid} の台本がありません。" for sid in seconds if sid not in got or not got[sid].script.strip()]
+        problems += [f"scene_id「{x.scene_id}」は台本を作る場面ではありません。" for x in o.scenes if x.scene_id not in seconds]
+        if problems or nudged["done"]:
+            return problems
+        nudged["done"] = True
+        lo, hi = CHARS_PER_SEC
+        for sid, sec in seconds.items():
+            n, room = script_chars(got[sid].script), max(1.0, sec - VOICE_MARGIN)
+            if not lo * room <= n <= hi * room:
+                problems.append(f"場面 {sid} の台本が {n} 文字です。映像 {sec:.1f} 秒に合うよう、"
+                                f"{lo * room:.0f}〜{hi * room:.0f} 文字にしてください（1秒あたり5〜6文字が目安）。")
+        return problems
+
+    return check
+
+
+# --- 録った声の振り分け --------------------------------------------------------------
+
+class VoiceAssign(_Strict):
+    file: str
+    scene_id: str    # どの場面の声か（どれにも当たらなければ空文字）
+    reason: str
+
+
+class AssignOut(_Strict):
+    assignments: list[VoiceAssign]
+
+
+def make_assign_check(files: set[str], scene_ids: set[str]):
+    def check(o: AssignOut) -> list[str]:
+        problems = []
+        got = {a.file for a in o.assignments}
+        problems += [f"ファイル「{f}」の振り分けがありません。" for f in sorted(files - got)]
+        problems += [f"ファイル「{a.file}」は一覧にありません。" for a in o.assignments if a.file not in files]
+        problems += [f"「{a.file}」の scene_id「{a.scene_id}」は声を録る場面ではありません。"
+                     for a in o.assignments if a.scene_id and a.scene_id not in scene_ids]
+        return problems
+
+    return check
+
+
 # --- 相談 ---------------------------------------------------------------------
 
 ConsultAction = Literal[
     "scene_update", "scene_add", "scene_delete", "plan_settings",
     "piece_update", "piece_move", "insert_update", "drop_restore",
-    "telop_update", "telop_add", "telop_delete", "title", "style", "bgm",
+    "telop_update", "telop_add", "telop_delete", "title", "style", "bgm", "voice_assign",
 ]
 
 

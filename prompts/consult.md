@@ -17,14 +17,16 @@
   利用者が「反映する」を押すまで何も変わらない。description には、利用者に見せる「何をどう変えるか」を1文で書く。
 - remember: 利用者が「覚えておいて」「今後は〜して」など、これからもずっと守ってほしいことを言ったときだけ、
   その好みを短い1文で入れる（例「テロップの強調色は赤（#E60012）にする」）。それ以外は空にする。
+- 声を別に録る動画では、ナレーション台本は映像の長さに合わせて書かれている。台本を直すときは長さ（1秒あたり5〜6文字）を保つ。
 - next_step: 変更を反映したあとに必要なこと。使う部分・差し込み・切った部分を変えたら "rebuild"（作り直し）、
   テロップ・タイトル・色・BGM だけなら "preview"、それ以外は "none"。
 - 商品情報にない性能や数値を作らない。できないこと（このツールで扱えないこと）は、できないと答える。
 
 # 変更案の形（action と、index と、fields）
 fields は name と value の組。value はすべて文字列で書く（数値も "12.5" のように）。
-- scene_update: 台本の場面を直す。index=場面の番号。fields: title, script, seconds, shots（改行で区切る）
-- scene_add: 場面を足す。index=入れる位置（最後なら -1）。fields: title, script, seconds, shots
+- scene_update: 場面を直す。index=場面の番号。fields: title, points（伝えること）, script（セリフ・ナレーション台本）,
+  seconds, shots（改行で区切る）, voice（talk=顔出しで話す／narration=声をあとで録る）
+- scene_add: 場面を足す。index=入れる位置（最後なら -1）。fields: title, points, script, seconds, shots, voice
 - scene_delete: 場面を消す。index=場面の番号。fields なし
 - plan_settings: 動画の条件。index=-1。fields: target_seconds（秒）, price_mode（hidden/open/amount）, price_amount（円）, extra_text
 - piece_update: 使う部分を直す。index=部分の番号。fields: enabled（true/false）, start, end（そのクリップの中の秒）
@@ -38,4 +40,6 @@ fields は name と value の組。value はすべて文字列で書く（数値
 - title: 冒頭タイトルを変える。index=-1。fields: text
 - style: テロップ全体の色。index=-1。fields: text_color, outline_color, emphasis_color, band_color（空なら帯なし）, band_opacity（0〜1）
 - bgm: BGM の音量。index=-1。fields: level（small/medium/large）
+- voice_assign: 録った声の場面を変える・使うものを選ぶ。index=録った声の番号。fields: scene（場面の番号。どれでもなければ空）, use（true/false）
+  （声の場面を変えたら next_step は "none"。利用者がナレーションの画面で「声に合わせて仕上げる」を押す）
 変える項目だけ fields に入れる（変えない項目は入れない）。

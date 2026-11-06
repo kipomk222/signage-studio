@@ -27,6 +27,7 @@ SKILL_FOR = {
     "plan": "signage-script",
     "edit": "signage-edit",
     "telop": "signage-telop",
+    "narration": "signage-narration",
     "consult": None,  # 相談はすべてのスキルを読む
 }
 MEMORY_HEADER = "# メモリ（利用者の好み）\n\n相談のときに「覚えておいて」と言われたことを、1行に1つ書く。すべての作業で守る。\n"
@@ -102,7 +103,7 @@ class Workspace:
 
     def skill_body(self, name: str) -> str:
         """先頭の説明部分（--- で囲んだところ）を除いた本文。"""
-        return re.sub(r"^---\n.*?\n---\n", "", self.skill(name), flags=re.S).strip()
+        return re.sub(r"^---\n.*?\n---\n", "", self.skill(name), flags=re.DOTALL).strip()
 
     def save_skill(self, name: str, text: str) -> None:
         if not re.fullmatch(r"[a-z0-9][a-z0-9\-]{1,40}", name):

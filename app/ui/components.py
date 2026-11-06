@@ -17,8 +17,13 @@ from app.project import STAGE_ORDER, Project, Stage
 ROOT = Path(__file__).resolve().parents[2]
 LOG = ROOT / "logs" / "エラー記録.txt"
 
-STEPS = [(Stage.PLAN, "企画", "plan"), (Stage.MATERIAL, "素材", "material"),
-         (Stage.REVIEW, "確認", "review"), (Stage.EXPORT, "書き出し", "export")]
+PAGE_KEY = {Stage.PLAN: "plan", Stage.MATERIAL: "material", Stage.VIDEO: "video", Stage.NARRATION: "narration",
+            Stage.REVIEW: "review", Stage.EXPORT: "export"}
+
+
+def steps(project: Project) -> list[Stage]:
+    """上部に並べる段階（声を別に録る動画は 映像・ナレーション も）。"""
+    return [s for s in project.flow if s is not Stage.DONE]
 
 CSS = """
 body { font-size: 16px; background: #f5f6f8; }
@@ -26,7 +31,7 @@ body { font-size: 16px; background: #f5f6f8; }
 .section { background: white; border-radius: 14px; padding: 20px 24px; box-shadow: 0 1px 3px rgba(0,0,0,.08); width: 100%; }
 .section-title { font-size: 1.15rem; font-weight: 700; margin-bottom: 4px; }
 .hint { color: #6b7280; font-size: 0.92rem; }
-.step-chip { padding: 6px 14px; border-radius: 999px; font-weight: 600; font-size: .95rem; }
+.step-chip { padding: 4px 10px; border-radius: 999px; font-weight: 600; font-size: .88rem; white-space: nowrap; }
 .step-done { background: #e6f4ea; color: #1e7b34; cursor: pointer; }
 .step-now { background: #1f3a93; color: white; }
 .step-todo { background: #e5e7eb; color: #9ca3af; }
@@ -43,8 +48,7 @@ def setup_page(title: str = "") -> None:
 
 
 def stage_url(pid: str, stage: Stage) -> str:
-    key = {Stage.PLAN: "plan", Stage.MATERIAL: "material", Stage.REVIEW: "review"}.get(stage, "export")
-    return f"/p/{pid}/{key}"
+    return f"/p/{pid}/{PAGE_KEY.get(stage, 'export')}"
 
 
 def header(project: Project | None = None, current: Stage | None = None,
@@ -58,13 +62,14 @@ def header(project: Project | None = None, current: Stage | None = None,
                 ui.label("サイネージ動画メーカー").classes("text-xl font-bold")
             if project is not None:
                 with ui.row().classes("items-center gap-2"):
-                    for i, (stage, label, _) in enumerate(STEPS, 1):
+                    flow = steps(project)
+                    for i, stage in enumerate(flow, 1):
                         reached = stage.index <= project.stage.index
                         cls = "step-now" if stage is current else ("step-done" if reached else "step-todo")
-                        chip = ui.label(f"{i} {label}").classes(f"step-chip {cls}")
+                        chip = ui.label(f"{i} {stage.label}").classes(f"step-chip {cls}")
                         if reached and stage is not current:
                             chip.on("click", lambda s=stage: ui.navigate.to(stage_url(project.id, s)))
-                        if i < len(STEPS):
+                        if i < len(flow):
                             ui.icon("chevron_right").classes("text-gray-400")
                 ui.label(project.model_number).classes("font-mono text-gray-600")
             with ui.row().classes("items-center gap-1"):

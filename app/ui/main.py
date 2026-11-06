@@ -12,7 +12,7 @@ from pathlib import Path
 from nicegui import ui
 
 from app import workflow as wf
-from app.ui import pages, settings  # noqa: F401  画面を登録する
+from app.ui import pages, settings, voicepages  # noqa: F401  画面を登録する
 
 
 def start(native: bool = True, port: int | None = None, projects: Path | None = None,

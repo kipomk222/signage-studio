@@ -46,8 +46,18 @@ PRODUCT = {
 
 
 def plan_json(seconds_each: float, n: int = 5) -> dict:
-    return {"scenes": [{"title": f"場面{i}", "script": "セリフ", "shots": ["手元アップ"], "seconds": seconds_each}
-                       for i in range(n)]}
+    return {"scenes": [{"title": f"場面{i}", "voice": "talk", "points": "要点", "script": "セリフ", "shots": ["手元アップ"],
+                        "seconds": seconds_each} for i in range(n)]}
+
+
+def separate_plan_json(seconds_each: float, n: int = 5, bad_talk: bool = False) -> dict:
+    scenes = []
+    for i in range(n):
+        talk = i in (0, n - 1) or bad_talk
+        scenes.append({"title": f"場面{i}", "voice": "talk" if talk else "narration", "points": f"伝えること{i}",
+                       "script": "今回はこの商品を紹介します" if talk else "", "seconds": seconds_each,
+                       "shots": ["正面で話す"] if talk else ["持ち上げる（約3秒）", "横から（約3秒）", "手元（約3秒）"]})
+    return {"scenes": scenes}
 
 
 # --- コマンドの組み立て --------------------------------------------------------
@@ -141,12 +151,21 @@ def product_obj() -> Product:
 def test_plan_fits_target_and_retries_when_too_long():
     # 目標150秒 → 台本に使えるのは142秒。最初は合計300秒で長すぎ、2回目で収まる
     fake = FakeClaude(plan_json(60), plan_json(28.4))
-    scenes = calls.make_plan(cc_with(fake), product_obj(), 150, Price(mode="open"), "展示品あり")
+    scenes = calls.make_plan(cc_with(fake), product_obj(), 150, Price(mode="open"), "展示品あり", separate=False)
     assert len(scenes) == 5 and sum(s.seconds for s in scenes) == pytest.approx(142)
     assert [s.id for s in scenes] == ["s1", "s2", "s3", "s4", "s5"]
     first_prompt = fake.calls[0][1]
     assert "142" in first_prompt and "オープン価格" in first_prompt and "展示品あり" in first_prompt
     assert "合計を 142 秒前後" in fake.calls[1][1]
+
+
+def test_separate_plan_has_talk_only_at_both_ends():
+    fake = FakeClaude(separate_plan_json(28.4, bad_talk=True), separate_plan_json(28.4))
+    scenes = calls.make_plan(cc_with(fake), product_obj(), 150, Price(), "")
+    assert "voice=\"talk\" は最初と最後" in fake.calls[1][1]
+    assert [s.voice for s in scenes] == ["talk", "narration", "narration", "narration", "talk"]
+    assert scenes[1].script == "" and scenes[1].points == "伝えること1" and scenes[0].script
+    assert "映像だけを撮る" in fake.calls[0][1]
 
 
 def test_price_text():
@@ -199,13 +218,27 @@ def test_youtube_text():
 
 
 def test_prompts_have_no_unfilled_placeholders(tmp_path):
-    fake = FakeClaude(PRODUCT, plan_json(28.4), {"title": "見出し", "telops": [{"start": 0, "end": 2, "text": "A"}]},
-                      {"title": "t", "description": "d"})
+    video = {"summary": "s", "dropped": [],
+             "cuts": [{"clip": "a.mov", "start": 0, "end": 3, "scene_id": "s1", "talk": False, "shows": "手元",
+                       "reason": "r"}],
+             "spares": [{"clip": "a.mov", "start": 4, "end": 6, "scene_id": "s1", "talk": False, "shows": "全体",
+                         "reason": "r"}]}
+    fake = FakeClaude(PRODUCT, separate_plan_json(28.4), plan_json(28.4),
+                      {"title": "見出し", "telops": [{"start": 0, "end": 2, "text": "A"}]},
+                      {"title": "t", "description": "d"}, video,
+                      {"scenes": [{"scene_id": "s1", "script": "片手で持てる軽さです"}]},
+                      {"assignments": [{"file": "v.m4a", "scene_id": "s1", "reason": "r"}]})
     cc = cc_with(fake)
     p, _ = calls.research_product(cc, "P1X9ADBL", cache_dir=tmp_path)
     calls.make_plan(cc, p, 150, Price())
+    calls.make_plan(cc, p, 150, Price(), separate=False)
     calls.make_telops(cc, p, [], TRANSCRIPT, 8.0, Price())
     calls.youtube_text(cc, p, [], Price())
+    sc = Scene(id="s1", title="軽さ", points="軽い", seconds=3, shots=["持ち上げる"])
+    calls.decide_video(cc, p, [sc], [calls.ClipBrief("a.mov", 8.0, [])])
+    calls.write_narration(cc, p, [calls.SceneCuts(sc, 3.0, [(0, 3, "手元")])], Price())
+    calls.assign_voices(cc, [sc], [("v.m4a", 2.0, "軽いです")])
+    assert len(fake.calls) == 8
     for _cmd, stdin, _cwd in fake.calls:
         assert "{{" not in stdin
 

@@ -277,8 +277,12 @@ async def plan_page(pid: str, research: int = 0) -> None:
                 .props("outlined autogrow").classes("w-full")
             extra.on("blur", lambda: (setattr(project.plan, "extra_text", extra.value or ""), persist()))
 
-        # --- 台本 ---
-        with section("③ 台本と構成", "場面ごとのセリフと、撮るカットです。自由に直せます。"):
+        # --- 構成 ---
+        separate = project.separate_voice
+        with section("③ 構成と撮るカット" if separate else "③ 台本と構成",
+                     "説明の場面は映像だけを撮り、声は映像ができてから台本を作って録ります。"
+                     "あいさつと店舗案内は顔を出してその場で話します。自由に直せます。" if separate
+                     else "場面ごとのセリフと、撮るカットです。自由に直せます。"):
             scenes_box = ui.column().classes("w-full gap-3")
 
         @ui.refreshable
@@ -302,9 +306,19 @@ async def plan_page(pid: str, research: int = 0) -> None:
                                                              persist(), scenes_view.refresh()))
                         ui.button(icon="arrow_upward", on_click=lambda i=i: move_scene(i, -1)).props("flat dense")
                         ui.button(icon="delete", on_click=lambda i=i: delete_scene(i)).props("flat dense color=grey")
-                    ui.textarea("セリフ", value=s.script).bind_value(s, "script").on("blur", lambda: persist()) \
-                        .props("outlined autogrow").classes("w-full")
-                    shots = ui.textarea("撮るカット（1行に1つ）", value="\n".join(s.shots)) \
+                    if separate:
+                        with ui.row().classes("w-full items-center gap-3"):
+                            ui.toggle({"talk": "顔を出して話す", "narration": "映像だけ（声はあとで録る）"}, value=s.voice,
+                                      on_change=lambda e, s=s: (setattr(s, "voice", e.value), persist(),
+                                                                scenes_view.refresh())).props("dense no-caps")
+                        ui.textarea("伝えること", value=s.points).bind_value(s, "points") \
+                            .on("blur", lambda: persist()).props("outlined autogrow").classes("w-full")
+                    if not separate or s.voice == "talk":
+                        ui.textarea("話すセリフ", value=s.script).bind_value(s, "script").on("blur", lambda: persist()) \
+                            .props("outlined autogrow").classes("w-full")
+                    elif s.script:
+                        ui.label(f"ナレーション（映像の完成後に作った台本）: {s.script}").classes("hint text-sm")
+                    shots = ui.textarea("撮るカット（並べる順に1行に1つ）", value="\n".join(s.shots)) \
                         .props("outlined autogrow").classes("w-full")
                     shots.on("blur", lambda shots=shots, s=s: (
                         setattr(s, "shots", [x.strip() for x in (shots.value or "").splitlines() if x.strip()]),
@@ -332,15 +346,29 @@ async def plan_page(pid: str, research: int = 0) -> None:
         async def make_script() -> None:
             nonlocal project
             save_project(folder, project)
-            got = await run_job("台本と構成を考えています", wf.make_plan_into, folder, CONFIG.services)
+            got = await run_job("構成と撮るカットを考えています" if separate else "台本と構成を考えています",
+                                wf.make_plan_into, folder, CONFIG.services)
             if got:
                 project = got
                 refresh_all()
 
         with scenes_box:
             scenes_view()
-            ui.button("台本を作る" if not project.plan.scenes else "台本を作り直す", icon="auto_awesome",
+            word = "構成" if separate else "台本"
+            ui.button(f"{word}を作る" if not project.plan.scenes else f"{word}を作り直す", icon="auto_awesome",
                       on_click=make_script).props("outline")
+
+        with ui.expansion("詳細設定", icon="tune").classes("section"):
+            def set_mode(e) -> None:
+                project.plan.voice_mode = e.value
+                for sc in project.plan.scenes:
+                    if e.value == "live":
+                        sc.voice = "talk"
+                persist()
+                refresh_all()
+            ui.select({"separate": "声は別に録る（映像を先に完成させ、台本を作ってから録る）",
+                       "live": "撮影のときに話す（これまでの方式）"}, value=project.plan.voice_mode,
+                      label="声の録り方", on_change=set_mode).props("outlined").classes("w-[520px]")
 
         def refresh_all() -> None:
             ui.navigate.to(f"/p/{pid}/plan")
@@ -476,21 +504,25 @@ async def material_page(pid: str) -> None:
                           on_change=lambda e: (setattr(project.settings, "fit", e.value), persist())) \
                     .props("outlined").classes("w-64")
             telop_sw = ui.switch("テロップを入れる", value=bool(project.product.name))
+            telop_sw.set_visibility(not project.separate_voice)  # 声を別に録るときは、仕上げで作る
             ui.switch("編集の判断を Claude Code にまかせる（言い直しを切る・並べる・差し込む）",
                       value=project.settings.ai_edit,
                       on_change=lambda e: (setattr(project.settings, "ai_edit", e.value), persist()))
 
+        separate = project.separate_voice
+
         async def start_edit() -> None:
             save_project(folder, project)
-            done = await run_job("編集しています", wf.build_edit, folder, CONFIG.services,
-                                 with_telops=telop_sw.value)
+            done = await run_job("映像を組み立てています" if separate else "編集しています", wf.build_edit, folder,
+                                 CONFIG.services, with_telops=telop_sw.value)
             if done is not None:
                 for n in done.notes:
                     ui.notify(n, type="warning", timeout=8000, position="top-right")
-                ui.navigate.to(f"/p/{pid}/review")
+                ui.navigate.to(f"/p/{pid}/{'video' if separate else 'review'}")
 
         with ui.row().classes("w-full justify-end"):
-            ui.button("編集を始める", icon="content_cut", on_click=start_edit).classes("big-button")
+            ui.button("映像を編集する" if separate else "編集を始める", icon="content_cut", on_click=start_edit) \
+                .classes("big-button")
 
 
 # =============================================================================
@@ -500,9 +532,22 @@ async def material_page(pid: str) -> None:
 FONT_OPTIONS = {"": "自動"} | {k: v.label for k, v in FONTS.items()}
 
 
+def fit_section(project: Project, pid: str) -> None:
+    """声に合わせて映像の長さを調整した結果（声を別に録る動画）。"""
+    with section("② 声に合わせた調整", "映像の長さを、録った声に合わせました。声や台本を直すときはナレーションの画面へ。"):
+        if not project.fitted:
+            ui.label("まだ声に合わせていません。ナレーションの画面で「声に合わせて仕上げる」を押してください。").classes("hint")
+        for n in project.fit_notes:
+            ui.label(f"・{n}").classes("text-sm")
+        if project.fitted and not project.fit_notes:
+            ui.label("カットの長さを少し伸ばす・詰めるだけで、ぴったり合いました。").classes("text-sm")
+        ui.button("ナレーションの画面へ", icon="mic", on_click=lambda: ui.navigate.to(f"/p/{pid}/narration")) \
+            .props("flat")
+
+
 @ui.page("/p/{pid}/review")
 async def review_page(pid: str) -> None:
-    setup_page("確認")
+    setup_page("仕上げ")
     loaded = load_or_home(pid)
     if not loaded:
         return
@@ -532,7 +577,10 @@ async def review_page(pid: str) -> None:
             ui.button("プレビューを作る", icon="play_circle", on_click=make_preview).props("outline")
 
         # --- 編集の内容 ---
-        edit_section(project, folder, pid)
+        if project.separate_voice:
+            fit_section(project, pid)
+        else:
+            edit_section(project, folder, pid)
 
         # --- 色 ---
         with section("③ テロップの色", "カラーコード（#RRGGBB）で入れるか、色見本から選びます。"):

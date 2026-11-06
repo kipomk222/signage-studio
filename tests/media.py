@@ -40,6 +40,15 @@ def make_clip(path: Path, seconds: float, size: str = "640x360",
     return path
 
 
+def make_voice(path: Path, speak: float, before: float = 0.8, after: float = 1.0) -> Path:
+    """別録りの声の代わり（音だけ）。前後に無音があり、間で speak 秒しゃべる。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    total = before + speak + after
+    expr = _speech_expr([(before, before + speak)])
+    _run(["-f", "lavfi", "-i", f"aevalsrc=exprs='{expr}':s=44100:d={total}", "-c:a", "aac", str(path)])
+    return path
+
+
 def make_bgm(path: Path, seconds: float = 6.0, freqs: tuple[int, ...] = (262, 330, 392)) -> Path:
     """BGM の代わり。一定の音量で鳴り続ける和音。"""
     path.parent.mkdir(parents=True, exist_ok=True)

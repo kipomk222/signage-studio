@@ -17,7 +17,7 @@ from app.pipeline.ffmpeg import ffmpeg_base, run
 from app.pipeline.normalize import AUDIO_ARGS
 from app.pipeline.silence import MIN_PIECE, Range, render_ranges
 from app.platform import PlatformProfile
-from app.project import EditPlan, EditPiece
+from app.project import EditPiece, EditPlan
 
 MIN_PIECE_SECONDS = 2 * FADE + 0.2   # つなぎ目に収まらないほど短い部分は使わない
 
@@ -35,19 +35,40 @@ class PieceLayout:
     clip: str
     ranges: list[Range]   # 元のクリップの、残した範囲
     out_start: float      # 完成（つないだ）動画での始まり
+    speed: float = 1.0
+    hold: float = 0.0
+    scene_id: str | None = None
 
     @property
     def length(self) -> float:
-        return sum(e - s for s, e in self.ranges)
+        return sum(e - s for s, e in self.ranges) * self.speed + self.hold
 
     def to_output(self, t: float) -> float | None:
         """元のクリップの時刻 t が、つないだ動画の何秒目か（切った所なら None）。"""
         pos = self.out_start
         for s, e in self.ranges:
             if s <= t <= e:
-                return round(pos + (t - s), 3)
-            pos += e - s
+                return round(pos + (t - s) * self.speed, 3)
+            pos += (e - s) * self.speed
         return None
+
+
+def cut_length(p: EditPiece) -> float:
+    """話していない映像のカットの、つないだ動画での長さ（ゆっくり再生・止めた絵を含む）。"""
+    return (p.end - p.start) * p.speed + p.hold
+
+
+def render_cut(profile: PlatformProfile, src: Path, dst: Path, p: EditPiece) -> None:
+    """話していない映像のカット: 元の音は消し、必要ならゆっくり再生・最後の絵を止めて伸ばす。"""
+    length = cut_length(p)
+    v = f"[0:v]trim=start={p.start}:end={p.end},setpts=(PTS-STARTPTS)*{p.speed:.4f}"
+    if p.hold > 0:
+        v += f",tpad=stop_mode=clone:stop_duration={p.hold:.3f}"
+    v += ",fps=30[v]"
+    a = f"anullsrc=r=48000:cl=stereo,atrim=0:{length:.3f}[a]"
+    run([*ffmpeg_base(profile.ffmpeg), "-i", str(src), "-filter_complex", f"{v};{a}",
+         "-map", "[v]", "-map", "[a]", "-t", f"{length:.3f}", *profile.video_args("work"), *AUDIO_ARGS, str(dst)],
+        what=f"「{src.name}」のカットを切り出せませんでした。")
 
 
 def map_time(layouts: list[PieceLayout], clip: str, t: float) -> float | None:
@@ -72,13 +93,22 @@ def render_plan(profile: PlatformProfile, plan: EditPlan, norm: dict[str, Path],
         checkpoint()
         if progress:
             progress(k / max(1, len(used)), f"部分を切り出しています（{k + 1}/{len(used)}）")
-        ranges = intersect((p.start, p.end), keeps.get(p.clip, []))
-        length = sum(e - s for s, e in ranges)
-        if length < MIN_PIECE_SECONDS:
-            continue
         dst = pieces_dir / f"{len(files):03d}.mp4"
-        render_ranges(profile, norm[p.clip], dst, ranges)
-        layouts.append(PieceLayout(i, p.clip, ranges, round(cursor, 3)))
+        if p.mute:  # 話していない映像: 範囲そのまま（無音カットしない）・音は消す
+            ranges = [(p.start, p.end)]
+            length = cut_length(p)
+            if length < MIN_PIECE_SECONDS:
+                continue
+            render_cut(profile, norm[p.clip], dst, p)
+        else:
+            ranges = intersect((p.start, p.end), keeps.get(p.clip, []))
+            length = sum(e - s for s, e in ranges)
+            if length < MIN_PIECE_SECONDS:
+                continue
+            render_ranges(profile, norm[p.clip], dst, ranges)
+        layouts.append(PieceLayout(i, p.clip, ranges, round(cursor, 3),
+                                   speed=p.speed if p.mute else 1.0, hold=p.hold if p.mute else 0.0,
+                                   scene_id=p.scene_id))
         files.append(dst)
         cursor += length - FADE
     if not files:

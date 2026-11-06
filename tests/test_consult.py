@@ -113,7 +113,7 @@ def test_consult_then_apply(folder, ws):
     services = Services(claude=cc_with(fake))
     reply = cs.consult(folder, services, "強調は赤がいい。今後もそうして", page="review", workspace=ws)
     assert len(fake.calls) == 2 and "前回の出力の問題" in fake.calls[1][1]
-    assert "## テロップ" in fake.calls[0][1] and "「確認」の画面" in fake.calls[0][1]
+    assert "## テロップ" in fake.calls[0][1] and "「仕上げ」の画面" in fake.calls[0][1]
     assert reply.status == "pending" and reply.next_step == "preview"
     chat = cs.load_chat(folder)
     assert [c.role for c in chat] == ["user", "assistant"]
@@ -167,6 +167,23 @@ def test_plan_change_marks_later_stages_stale(folder, ws):
     cs.consult(folder, services, "つかみを短く", workspace=ws)
     project, _ = cs.apply_proposal(folder, 1, workspace=ws)
     assert Stage.MATERIAL in project.stale and Stage.REVIEW in project.stale
+
+
+def test_voice_and_narration_changes(folder):
+    from app.project import VoiceTake
+    project = load_project(folder)
+    project.plan.voice_mode = "separate"
+    project.plan.scenes[0].voice, project.plan.scenes[1].voice = "talk", "narration"
+    project.voices = [VoiceTake(file="a.m4a", scene_id="s2", use=True, duration=4),
+                      VoiceTake(file="b.m4a", scene_id=None, use=False, duration=5)]
+    touched = cs.apply_to(project, [ch("voice_assign", 1, scene="1"),
+                                    ch("scene_update", 1, script="とても軽いです", points="軽さ")])
+    assert Stage.NARRATION in touched and Stage.PLAN in touched
+    a, b = project.voices
+    assert b.scene_id == "s2" and b.use and not a.use        # 同じ場面で使うのは1つ
+    assert project.plan.scenes[1].script == "とても軽いです" and project.plan.scenes[1].points == "軽さ"
+    assert cs.check_changes(project, [ch("voice_assign", 0, scene="0")])  # 顔出しの場面には割り当てない
+    assert "録った声" in cs.context_text(folder, project) and "映像だけ" in cs.context_text(folder, project)
 
 
 def test_empty_message(folder, ws):
