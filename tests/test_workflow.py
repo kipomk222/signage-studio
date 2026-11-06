@@ -106,7 +106,7 @@ def test_import_edit_preview_export(setup):
     n = len(fake.prompts)
     res = wf.replan_edit(folder, services)
     edit_prompt = next(p for p in fake.prompts[n:] if "編集の設計図" in p)
-    assert "01.mp4（8.0秒）" in edit_prompt and "あ、すみません" in edit_prompt and "sheet_01.jpg" in edit_prompt
+    assert "01.mp4（8.0秒・話している秒数" in edit_prompt and "あ、すみません" in edit_prompt and "sheet_01.jpg" in edit_prompt
     project = load_project(folder)
     assert res.source == "ai" and project.edit.dropped[0].reason == "言い直し"
     telop_prompt = fake.prompts[-1]

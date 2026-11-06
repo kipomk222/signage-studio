@@ -97,7 +97,7 @@ def font_size(text: str, max_width_px: int = 1700, role: str = "telop") -> int:
     elif role == "subtitle":
         base = 56
     else:
-        base = 96 if longest <= 10 else 84 if longest <= 14 else 72
+        base = 108 if longest <= 10 else 94 if longest <= 14 else 82  # 少し大きめ（2026-11 調整）
     return int(min(base, max_width_px / longest))
 
 

@@ -184,10 +184,12 @@ class ClipBrief:
 def clips_text(clips: list[ClipBrief]) -> str:
     out = []
     for c in clips:
-        head = f"## {c.file}（{c.duration:.1f}秒）"
         if not c.phrases:
+            head = f"## {c.file}（{c.duration:.1f}秒）"
             out.append(head + "\n（話し声なし）")
             continue
+        talk = sum(b - a for a, b, _ in c.phrases)
+        head = f"## {c.file}（{c.duration:.1f}秒・話している秒数 約{talk:.1f}秒）"
         lines = "\n".join(f"{a:.2f}-{b:.2f}: {t}" for a, b, t in c.phrases)
         out.append(f"{head}\n{lines}")
     return "\n\n".join(out)
@@ -202,6 +204,7 @@ def decide_edit(cc: ClaudeCode, product: Product, scenes: list[Scene], budget: f
     prompt = load_prompt("edit", product=product_text(product), scenes=scene_lines, budget=f"{budget:.0f}",
                          clips=clips_text(clips),
                          sheets="\n".join(f"- {p.name}（{p.stem.removeprefix('sheet_')}）" for p in sheets) or "（なし）")
-    check = make_edit_check({c.file: c.duration for c in clips}, {s.id for s in scenes}, budget)
+    check = make_edit_check({c.file: c.duration for c in clips}, {s.id for s in scenes}, budget,
+                            phrases={c.file: c.phrases for c in clips})
     return cc.ask(prompt, AiEdit, tools=["Read"] if sheets else [], files=sheets, timeout=EDIT_TIMEOUT,
                   check=check, kind="edit")

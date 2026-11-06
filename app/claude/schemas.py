@@ -196,7 +196,45 @@ EDIT_OVER = 1.2     # 目標の長さをこれ以上こえたらやり直し
 INSERT_MIN, INSERT_MAX = 1.0, 8.0
 
 
-def make_edit_check(durations: dict[str, float], scene_ids: set[str], budget: float):
+COVER_MIN = 0.4     # 説明の部分のうち、商品の映像で覆われていてほしい最低の割合（1回だけ指摘）
+PIECE_PAD = 0.3     # 部分ごとに残る前後の間（秒）の見込み
+
+Phrases = dict[str, list[tuple[float, float, str]]]
+
+
+def spoken_seconds(clip: str, start: float, end: float, phrases: Phrases | None) -> float:
+    """その部分で話している秒数の見込み（中の長い間はあとで詰めるため）。文字起こしがなければ長さそのもの。"""
+    if phrases is None or clip not in phrases:
+        return max(0.0, end - start)
+    talk = sum(max(0.0, min(b, end) - max(a, start)) for a, b, _ in phrases[clip])
+    return min(end - start, talk + PIECE_PAD) if talk else min(end - start, PIECE_PAD)
+
+
+def covered_ratio(e: AiEdit) -> float | None:
+    """最初と最後を除いた説明の部分のうち、差し込みで覆われた割合。説明の部分がなければ None。"""
+    middle = range(1, len(e.pieces) - 1)
+    total = sum(e.pieces[i].end - e.pieces[i].start for i in middle)
+    if total <= 0:
+        return None
+    covered = 0.0
+    for i in middle:
+        length = e.pieces[i].end - e.pieces[i].start
+        spans = sorted((max(0.0, x.offset), min(length, x.offset + x.end - x.start))
+                       for x in e.inserts if x.over_piece == i)
+        reach = 0.0
+        for a, b in spans:  # 重なりは1回だけ数える
+            a = max(a, reach)
+            if b > a:
+                covered += b - a
+                reach = b
+    return covered / total
+
+
+def make_edit_check(durations: dict[str, float], scene_ids: set[str], budget: float,
+                    phrases: Phrases | None = None):
+    """形・時刻の誤りは毎回差し戻す。商品の映像の使い方と場面の抜けは、1回目だけ指摘する。"""
+    nudged = {"done": False}
+
     def check(e: AiEdit) -> list[str]:
         problems: list[str] = []
         if not e.pieces:
@@ -217,9 +255,10 @@ def make_edit_check(durations: dict[str, float], scene_ids: set[str], budget: fl
                 if p.start < t and s < p.end:
                     problems.append(f"pieces[{i}] が、同じクリップの別の部分と重なっています。")
             spans.setdefault(p.clip, []).append((p.start, p.end))
-        total = sum(max(0.0, p.end - p.start) for p in e.pieces)
+        total = sum(spoken_seconds(p.clip, p.start, p.end, phrases) for p in e.pieces)
         if total > budget * EDIT_OVER:
-            problems.append(f"使う部分の合計が {total:.0f} 秒で、目標（{budget:.0f} 秒）を大きくこえています。削ってください。")
+            problems.append(f"話している時間の合計が約 {total:.0f} 秒で、目標（{budget:.0f} 秒）を大きくこえています。"
+                            "言い直しや余計な話を切って短くしてください（場面は丸ごと落とさない）。")
         for i, ins in enumerate(e.inserts):
             d = durations.get(ins.clip)
             if d is None:
@@ -237,9 +276,28 @@ def make_edit_check(durations: dict[str, float], scene_ids: set[str], budget: fl
                 problems.append(f"inserts[{i}] は、重ねる部分と別のクリップにしてください。")
             if not 0 <= ins.offset < max(0.01, piece.end - piece.start):
                 problems.append(f"inserts[{i}] の offset が、重ねる部分の長さをこえています。")
+        if not nudged["done"]:
+            nudged["done"] = True
+            problems += _soft_problems(e, durations, scene_ids)
         return problems
 
     return check
+
+
+def _soft_problems(e: AiEdit, durations: dict[str, float], scene_ids: set[str]) -> list[str]:
+    out = []
+    used_scenes = {p.scene_id for p in e.pieces}
+    if missing := sorted(scene_ids - used_scenes):
+        out.append(f"台本の場面 {', '.join(missing)} が入っていません。素材がある場面は、短くしてでも入れてください"
+                   "（素材がないときだけ省き、summary にそう書く）。")
+    used = {p.clip for p in e.pieces} | {x.clip for x in e.inserts} | {d.clip for d in e.dropped}
+    unused = sorted(set(durations) - used)
+    ratio = covered_ratio(e)
+    if ratio is not None and ratio < COVER_MIN and unused:
+        out.append(f"説明の部分のうち、商品の映像で覆われているのは約 {ratio * 100:.0f}% です。主役は商品なので、"
+                   f"まだ使っていない映像（{', '.join(unused[:12])}）から、話している内容に合うものを差し込みで重ねてください"
+                   "（合う映像がない説明はそのままでよい）。")
+    return out
 
 
 # --- 相談 ---------------------------------------------------------------------
