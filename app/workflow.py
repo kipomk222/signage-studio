@@ -24,7 +24,9 @@ from app.claude.runner import ClaudeCode
 from app.errors import UserError
 from app.jobs import Cancelled, Job, checkpoint
 from app.pipeline import bgm as bgm_step
-from app.pipeline.cards import END_SECONDS, TITLE_SECONDS, find_logo, make_end_card, make_title_card
+from app.pipeline.cards import (
+    END_SECONDS, TITLE_SECONDS, corner_logo_image, find_corner_logo, find_logo, make_end_card, make_title_card,
+)
 from app.pipeline.concat import FADE, concat_clips
 from app.pipeline.export import ExportResult, export_video
 from app.pipeline.ffmpeg import duration_of, ffmpeg_base, run
@@ -584,9 +586,17 @@ def render_telop_video(profile: PlatformProfile, project: Project, folder: Path,
         src = work / "preview_src.mp4"
         run([*ffmpeg_base(profile.ffmpeg), "-i", str(joined), "-t", f"{until:.2f}", "-c", "copy", str(src)],
             what="プレビューを作れませんでした。")
-    with_telops = burn_ass(profile, src, ass, work / f"{tag}telops.mp4")
+    corner = None
+    cl = project.settings.corner_logo
+    if cl.show:
+        found = find_corner_logo()
+        if found is not None:
+            corner = corner_logo_image(found, work / "corner_logo.png", cl.size, cl.plate)
+        elif notes is not None and not until:
+            notes.append("左上のロゴは、assets/corner_logo（または assets/logo）に画像を入れると出ます。")
+    with_telops = burn_ass(profile, src, ass, work / f"{tag}telops.mp4", corner)
     title_card = make_title_card(profile, joined, project.title, p.model_number, work / f"{tag}title.mp4",
-                                 p.category, p.model_number, style)
+                                 p.category, p.model_number, style, corner)
     parts = [title_card, with_telops]
     if not until:
         logo = logo or find_logo()

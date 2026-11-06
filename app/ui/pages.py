@@ -733,6 +733,23 @@ async def review_page(pid: str) -> None:
                 ui.toggle({"small": "小", "medium": "中", "large": "大"}, value=project.settings.bgm_level,
                           on_change=lambda e: (setattr(project.settings, "bgm_level", e.value), persist()))
 
+        # --- 左上のロゴ ---
+        with section("⑥ 左上のロゴ", "動画の左上にずっとロゴを出します（エンドカードは除く）。画像は assets/corner_logo"
+                                   "（空なら assets/logo）から読みます。"):
+            cl = project.settings.corner_logo
+            from app.pipeline.cards import find_corner_logo
+            found = find_corner_logo()
+            with ui.row().classes("gap-6 items-center"):
+                ui.switch("出す", value=cl.show, on_change=lambda e: (setattr(cl, "show", e.value), persist()))
+                ui.toggle({"small": "小", "medium": "中", "large": "大"}, value=cl.size,
+                          on_change=lambda e: (setattr(cl, "size", e.value), persist()))
+                ui.switch("白い下地を付ける", value=cl.plate, on_change=lambda e: (setattr(cl, "plate", e.value), persist()))
+            if found is None:
+                ui.label("ロゴの画像が見つかりません。assets/corner_logo か assets/logo に PNG を入れてください。") \
+                    .classes("text-orange-700 text-sm")
+            else:
+                ui.label(f"使う画像: {found.parent.name}/{found.name}（直したらプレビューを作り直すと確かめられます）").classes("hint text-sm")
+
         with ui.row().classes("w-full justify-end"):
             ui.button("書き出しへ進む", icon="arrow_forward",
                       on_click=lambda: (persist(), ui.navigate.to(f"/p/{pid}/export"))).classes("big-button")

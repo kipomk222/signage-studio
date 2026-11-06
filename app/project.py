@@ -228,6 +228,14 @@ class TelopStyle(BaseModel):
         return v
 
 
+class CornerLogo(BaseModel):
+    """動画の左上にずっと出すロゴ。画像は assets/corner_logo（なければ assets/logo）から読む。"""
+
+    show: bool = True
+    size: Literal["small", "medium", "large"] = "medium"
+    plate: bool = True   # 後ろに白い下地を付ける（暗い映像・派手な映像でも読めるように）
+
+
 class Settings(BaseModel):
     bgm_file: str = ""
     bgm_level: Literal["small", "medium", "large"] = "medium"
@@ -236,6 +244,7 @@ class Settings(BaseModel):
     ai_edit: bool = True                  # 編集の判断を Claude Code にまかせる
     outputs: list[Literal["store", "youtube"]] = Field(default_factory=lambda: ["store"])
     telop_style: TelopStyle = Field(default_factory=TelopStyle)
+    corner_logo: CornerLogo = Field(default_factory=CornerLogo)
 
 
 class HistoryEntry(BaseModel):

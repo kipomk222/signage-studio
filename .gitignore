@@ -3,6 +3,8 @@ assets/bgm/*
 !assets/bgm/.gitkeep
 assets/logo/*
 !assets/logo/.gitkeep
+assets/corner_logo/*
+!assets/corner_logo/.gitkeep
 
 # 作成した動画と調査結果
 projects/

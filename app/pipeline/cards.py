@@ -17,15 +17,49 @@ from app.platform import PlatformProfile, ffmpeg_filter_path
 
 ROOT = Path(__file__).resolve().parents[2]
 LOGO_DIR = ROOT / "assets" / "logo"
+CORNER_LOGO_DIR = ROOT / "assets" / "corner_logo"   # 左上にずっと出すロゴ（なければ LOGO_DIR のもの）
+CORNER_WIDTH = {"small": 220, "medium": 280, "large": 360}
+CORNER_MARGIN = 36
 TITLE_SECONDS, END_SECONDS = 3.0, 5.0
 LOGO_EXTS = {".png", ".webp", ".jpg", ".jpeg"}
 
 
-def find_logo(folder: Path = LOGO_DIR) -> Path | None:
+def find_logo(folder: Path | None = None) -> Path | None:
+    folder = folder or LOGO_DIR
     if not folder.exists():
         return None
     logos = sorted(p for p in folder.iterdir() if p.suffix.lower() in LOGO_EXTS)
     return logos[0] if logos else None
+
+
+def find_corner_logo(folder: Path | None = None, fallback: Path | None = None) -> Path | None:
+    """左上に出すロゴ。左上用のフォルダが空なら、エンドカード用のロゴ。"""
+    return find_logo(folder or CORNER_LOGO_DIR) or find_logo(fallback or LOGO_DIR)
+
+
+def corner_logo_image(logo: Path, dst: Path, size: str = "medium", plate: bool = True) -> Path:
+    """左上に重ねる画像（決まった横幅にそろえ、必要なら角の丸い白い下地を付ける）。"""
+    from PIL import Image, ImageDraw
+    img = Image.open(logo).convert("RGBA")
+    width = CORNER_WIDTH.get(size, CORNER_WIDTH["medium"])
+    bbox = img.getbbox()  # 透明な余白は切る
+    if bbox:
+        img = img.crop(bbox)
+    img = img.resize((width, max(1, round(img.height * width / img.width))), Image.LANCZOS)
+    if plate:
+        pad = round(width * 0.06)
+        out = Image.new("RGBA", (img.width + pad * 2, img.height + pad * 2), (0, 0, 0, 0))
+        ImageDraw.Draw(out).rounded_rectangle([0, 0, out.width - 1, out.height - 1], radius=pad, fill=(255, 255, 255, 225))
+        out.alpha_composite(img, (pad, pad))
+        img = out
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    img.save(dst)
+    return dst
+
+
+def corner_overlay(label_in: str, corner_input: int, label_out: str = "[v]") -> str:
+    """filter_complex の一部: 映像 label_in の左上に、入力番号 corner_input の画像を重ねる。"""
+    return f"{label_in}[{corner_input}:v]overlay={CORNER_MARGIN}:{CORNER_MARGIN}:format=auto,format=yuv420p{label_out}"
 
 
 def _silence() -> list[str]:
@@ -54,14 +88,19 @@ def build_title_ass(path: Path, title: str, subtitle: str, category: str, model_
 
 def make_title_card(profile: PlatformProfile, main_video: Path, title: str, subtitle: str,
                     dst: Path, category: str = "", model_number: str = "",
-                    style: TelopStyle | None = None) -> Path:
+                    style: TelopStyle | None = None, corner: Path | None = None) -> Path:
     ass = build_title_ass(dst.with_suffix(".ass"), title, subtitle, category, model_number, style)
-    vf = (f"boxblur=24:2,eq=brightness=-0.28:saturation=0.8,"
+    vf = (f"trim=0:0.04,setpts=PTS-STARTPTS,tpad=stop_mode=clone:stop_duration={TITLE_SECONDS},"
+          f"boxblur=24:2,eq=brightness=-0.28:saturation=0.8,"
           f"ass={ffmpeg_filter_path(ass)}:fontsdir={ffmpeg_filter_path(FONTS_DIR)},"
           f"fps={FPS},format=yuv420p")
-    run([*ffmpeg_base(profile.ffmpeg), "-i", str(main_video), *_silence(),
-         "-map", "0:v:0", "-map", "1:a:0", "-vf", f"trim=0:0.04,setpts=PTS-STARTPTS,tpad=stop_mode=clone:stop_duration={TITLE_SECONDS},{vf}",
-         "-t", f"{TITLE_SECONDS}", *profile.video_args("work"), *AUDIO_ARGS, str(dst)],
+    args = [*ffmpeg_base(profile.ffmpeg), "-i", str(main_video), *_silence()]
+    if corner is not None:  # 左上のロゴ
+        args += ["-i", str(corner), "-filter_complex", f"[0:v:0]{vf}[b];" + corner_overlay("[b]", 2),
+                 "-map", "[v]", "-map", "1:a:0"]
+    else:
+        args += ["-map", "0:v:0", "-map", "1:a:0", "-vf", vf]
+    run([*args, "-t", f"{TITLE_SECONDS}", *profile.video_args("work"), *AUDIO_ARGS, str(dst)],
         what="冒頭のタイトルを作れませんでした。")
     return dst
 

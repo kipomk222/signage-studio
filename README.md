@@ -9,7 +9,8 @@
    - Mac: `brew install uv ffmpeg`
    - Windows: `winget install astral-sh.uv` と `winget install ffmpeg`
 3. このリポジトリを取り込み、フォルダで `uv sync` を実行
-4. `assets/bgm/` にヨドバシカメラの歌、`assets/logo/` にロゴ PNG（背景透過）を置く（Git には含めない）
+4. `assets/bgm/` にヨドバシカメラの歌、`assets/logo/` にロゴ PNG（背景透過）を置く（Git には含めない）。
+   左上に出すロゴを別の画像にしたいときは `assets/corner_logo/` に置く（空なら `assets/logo/` のロゴを使う）
 
 ## 起動（ふだんはこれだけ）
 

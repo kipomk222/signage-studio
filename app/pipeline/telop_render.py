@@ -119,9 +119,16 @@ def build_telop_ass(telops: list[Telop], path: Path, category: str = "", model_n
     return path
 
 
-def burn_ass(profile: PlatformProfile, src: Path, ass: Path, dst: Path) -> Path:
+def burn_ass(profile: PlatformProfile, src: Path, ass: Path, dst: Path, corner: Path | None = None) -> Path:
+    """テロップを焼き込む。corner（画像）があれば、同じ処理の中で左上にロゴを重ねる。"""
     vf = f"ass={ffmpeg_filter_path(ass)}:fontsdir={ffmpeg_filter_path(FONTS_DIR)}"
-    run([*ffmpeg_base(profile.ffmpeg), "-i", str(src), "-vf", vf,
+    if corner is not None:
+        from app.pipeline.cards import corner_overlay
+        video = ["-i", str(corner), "-filter_complex", f"[0:v]{vf}[t];" + corner_overlay("[t]", 1),
+                 "-map", "[v]", "-map", "0:a?"]
+    else:
+        video = ["-vf", vf]
+    run([*ffmpeg_base(profile.ffmpeg), "-i", str(src), *video,
          *profile.video_args("work"), "-c:a", "copy", str(dst)],
         what="テロップを動画に入れられませんでした。",
         how="テロップに特殊な記号が入っていないか確認して、もう一度お試しください。")
