@@ -57,7 +57,7 @@ from app.project import (
     save_project,
 )
 from app.telopcheck import check_after_telops
-from app.fileops import replace_file
+from app.fileops import copy_in, replace_file
 from app.workflow import (
     ClipData,
     EditResult,
@@ -382,14 +382,10 @@ def import_voices(folder: Path, source: Path | list[Path], services: Services, j
     known = {v.file for v in project.voices}
     for i, src in enumerate(files, 1):
         _step(job, 0.05 + 0.6 * (i - 1) / len(files), f"声を聞き取っています（{i}/{len(files)}）")
-        name = src.name
-        n = 2
-        while name in known or (vdir / name).exists() and not _same_file(vdir / name, src):
-            name = f"{src.stem}_{n}{src.suffix}"
-            n += 1
-        dst = vdir / name
-        if not dst.exists():
-            shutil.copy2(src, dst)
+        dst = copy_in(src, vdir)  # 同じ名前の別の録音は「名前_2」で入れる
+        name = dst.name
+        if name in known:  # 同じファイルをもう一度入れたとき: 前の振り分けをそのまま残す
+            continue
         info = edge_trim(profile, dst)
         wav = prepare_voice(profile, dst, _voice_wav(folder, name), info)
         words = transcribe(profile, wav, hint, services.transcriber)
@@ -404,13 +400,6 @@ def import_voices(folder: Path, source: Path | list[Path], services: Services, j
     project = assign_voices_into(folder, services)
     _step(job, 1.0, "声を取り込みました")
     return project.voices
-
-
-def _same_file(a: Path, b: Path) -> bool:
-    try:
-        return a.stat().st_size == b.stat().st_size and a.read_bytes()[:65536] == b.read_bytes()[:65536]
-    except OSError:
-        return False
 
 
 def assign_voices_into(folder: Path, services: Services) -> Project:
@@ -501,18 +490,19 @@ def fit_to_voices(project: Project, data: dict[str, ClipData]) -> tuple[list[Edi
             out += pieces
             continue
         dur = {f: d.duration for f, d in data.items()}
-        cuts = [Cut(p.clip, p.start, p.end, dur.get(p.clip, p.end)) for p in pieces]
-        spares = [Cut(p.clip, p.start, p.end, dur.get(p.clip, p.end)) for p in project.edit.spares
-                  if p.enabled and p.scene_id == s.id and p.clip in dur]
+        cuts = [Cut(p.clip, p.start, p.end, dur.get(p.clip, p.end), ref=k) for k, p in enumerate(pieces)]
+        spare_pieces = [p for p in project.edit.spares if p.enabled and p.scene_id == s.id and p.clip in dur]
+        spares = [Cut(p.clip, p.start, p.end, dur[p.clip], ref=k) for k, p in enumerate(spare_pieces)]
         r = fit_scene(cuts, target_length(voice[s.id].duration), spares)
         notes += [f"「{s.title}」: {n}" for n in dict.fromkeys(r.notes)]
-        spare_shows = [p.shows for p in project.edit.spares if p.enabled and p.scene_id == s.id and p.clip in dur]
-        kept = [c for c in r.cuts if not c.spare]
-        added = [c for c in r.cuts if c.spare]
-        out += [EditPiece(clip=c.clip, start=c.start, end=c.end, scene_id=s.id, mute=True, speed=c.speed, hold=c.hold,
-                          shows=p.shows, reason="声に合わせて長さを調整") for c, p in zip(kept, pieces)]
-        out += [EditPiece(clip=c.clip, start=c.start, end=c.end, scene_id=s.id, mute=True, speed=c.speed, hold=c.hold,
-                          shows=sh, reason="予備のカットから足した") for c, sh in zip(added, spare_shows)]
+        if not r.cuts:  # 念のため（fit_scene は少なくとも1つ残す）
+            out += pieces
+            continue
+        for c in r.cuts:  # ref で元のカットの説明を引く（外したカットがあってもずれない）
+            src = spare_pieces[c.ref] if c.spare else pieces[c.ref]
+            out.append(EditPiece(clip=c.clip, start=c.start, end=c.end, scene_id=s.id, mute=True, speed=c.speed,
+                                 hold=c.hold, shows=src.shows,
+                                 reason="予備のカットから足した" if c.spare else "声に合わせて長さを調整"))
     return out, notes, missing
 
 
@@ -593,5 +583,5 @@ def mix_voices(profile, video: Path, voices: list[tuple[Path, float]], dst: Path
     labels = "[0:a]" + "".join(f"[d{k}]" for k in range(1, len(voices) + 1))
     graph.append(f"{labels}amix=inputs={len(voices) + 1}:duration=first:normalize=0[a]")
     run([*args, "-filter_complex", ";".join(graph), "-map", "0:v", "-map", "[a]", "-c:v", "copy", *AUDIO_ARGS, str(dst)],
-        what="声を映像に重ねられませんでした。")
+        what="声を映像に重ねられませんでした。", output=dst)
     return dst

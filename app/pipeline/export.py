@@ -7,6 +7,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from app.fileops import replace_file
 from app.pipeline.ffmpeg import PipelineError, duration_of, ffmpeg_base, run
 from app.pipeline.normalize import SAMPLE_RATE
 from app.platform import PlatformProfile
@@ -77,6 +78,7 @@ def export_video(profile: PlatformProfile, src: Path, out_dir: Path, base_name: 
     t = TARGETS[target_key]
     out_dir.mkdir(parents=True, exist_ok=True)
     dst = out_dir / f"{base_name}_{t.label}.mp4"
+    part = dst.with_name(dst.stem + ".part.mp4")  # 拡張子は .mp4 のまま（FFmpeg が形式を決められるように）
     m = measure_loudnorm(profile, src, t)
     loudnorm = (f"loudnorm=I={t.lufs}:TP={t.true_peak}:LRA={t.lra}"
                 f":measured_I={m['input_i']}:measured_TP={m['input_tp']}"
@@ -86,10 +88,16 @@ def export_video(profile: PlatformProfile, src: Path, out_dir: Path, base_name: 
         [*ffmpeg_base(profile.ffmpeg), "-i", str(src), "-map", "0:v:0", "-map", "0:a:0",
          *profile.video_args("final"), "-af", loudnorm,
          "-c:a", "aac", "-b:a", "192k", "-ar", str(SAMPLE_RATE), "-ac", "2",
-         "-movflags", "+faststart", str(dst)],
+         "-movflags", "+faststart", str(part)],
         what=f"{t.label}の動画を書き出せませんでした。",
         how="保存先の空き容量を確認して、もう一度お試しください。",
+        output=part,
     )
-    lufs, peak = measure_output(profile, dst)
+    try:
+        lufs, peak = measure_output(profile, part)
+    except BaseException:
+        part.unlink(missing_ok=True)
+        raise
+    replace_file(part, dst)  # できあがってから本当の名前にする（途中で落ちても壊れた完成品が残らない）
     return ExportResult(target=t, path=dst, duration=duration_of(profile.ffprobe, dst),
                         size_bytes=dst.stat().st_size, lufs=lufs, true_peak=peak)

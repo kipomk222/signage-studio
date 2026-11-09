@@ -40,7 +40,7 @@ def contact_sheet(profile: PlatformProfile, video: Path, duration: float, dst: P
         for i, t in enumerate(times):
             frame = Path(tmp) / f"{i}.jpg"
             run([*ffmpeg_base(profile.ffmpeg), "-ss", f"{t}", "-i", str(video), "-frames:v", "1",
-                 "-vf", f"scale={TILE_W}:{TILE_H}", str(frame)], what="映像の見本を作れませんでした。")
+                 "-vf", f"scale={TILE_W}:{TILE_H}", str(frame)], what="映像の見本を作れませんでした。", output=frame)
             x, y = (i % COLS) * TILE_W, 40 + (i // COLS) * TILE_H
             if frame.exists():
                 sheet.paste(Image.open(frame).convert("RGB"), (x, y))

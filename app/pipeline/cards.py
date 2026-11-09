@@ -13,7 +13,7 @@ from app.pipeline.fonts import FONTS_DIR, choose_font, font_size
 from app.pipeline.normalize import AUDIO_ARGS, FPS, HEIGHT, SAMPLE_RATE, WIDTH
 from app.pipeline.telop_render import EVENTS, HEADER, dialogue, style_line
 from app.project import TelopStyle
-from app.platform import PlatformProfile, ffmpeg_filter_path
+from app.platform import PlatformProfile, ffmpeg_rel_path
 
 ROOT = Path(__file__).resolve().parents[2]
 LOGO_DIR = ROOT / "assets" / "logo"
@@ -89,10 +89,12 @@ def build_title_ass(path: Path, title: str, subtitle: str, category: str, model_
 def make_title_card(profile: PlatformProfile, main_video: Path, title: str, subtitle: str,
                     dst: Path, category: str = "", model_number: str = "",
                     style: TelopStyle | None = None, corner: Path | None = None) -> Path:
+    main_video, dst = Path(main_video).resolve(), Path(dst).resolve()  # FFmpeg を別の場所で動かすので絶対の場所で
+    corner = Path(corner).resolve() if corner is not None else None
     ass = build_title_ass(dst.with_suffix(".ass"), title, subtitle, category, model_number, style)
     vf = (f"trim=0:0.04,setpts=PTS-STARTPTS,tpad=stop_mode=clone:stop_duration={TITLE_SECONDS},"
           f"boxblur=24:2,eq=brightness=-0.28:saturation=0.8,"
-          f"ass={ffmpeg_filter_path(ass)}:fontsdir={ffmpeg_filter_path(FONTS_DIR)},"
+          f"ass={ffmpeg_rel_path(ass, ass.parent)}:fontsdir={ffmpeg_rel_path(FONTS_DIR, ass.parent)},"
           f"fps={FPS},format=yuv420p")
     args = [*ffmpeg_base(profile.ffmpeg), "-i", str(main_video), *_silence()]
     if corner is not None:  # 左上のロゴ
@@ -101,7 +103,7 @@ def make_title_card(profile: PlatformProfile, main_video: Path, title: str, subt
     else:
         args += ["-map", "0:v:0", "-map", "1:a:0", "-vf", vf]
     run([*args, "-t", f"{TITLE_SECONDS}", *profile.video_args("work"), *AUDIO_ARGS, str(dst)],
-        what="冒頭のタイトルを作れませんでした。")
+        what="冒頭のタイトルを作れませんでした。", output=dst, cwd=ass.parent)
     return dst
 
 
@@ -122,5 +124,5 @@ def make_end_card(profile: PlatformProfile, dst: Path, logo: Path | None = None)
                 "[1:v]scale=960:420:force_original_aspect_ratio=decrease[logo];"
                 "[0:v][logo]overlay=(W-w)/2:(H-h)/2:shortest=1,format=yuv420p[v]"]
     cmd += ["-t", f"{END_SECONDS}", *profile.video_args("work"), *AUDIO_ARGS, str(dst)]
-    run(cmd, what="エンドカードを作れませんでした。", how="ロゴの画像（PNG）が開けるか確認してください。")
+    run(cmd, what="エンドカードを作れませんでした。", how="ロゴの画像（PNG）が開けるか確認してください。", output=dst)
     return dst

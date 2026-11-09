@@ -151,11 +151,8 @@ class ClaudeCode:
             text = json.dumps(payload, ensure_ascii=False) + proc.stderr
             raise ClaudeError(*(_classify(text) or FAILED), detail=text[-2000:])
         data = payload.get("structured_output")
-        if data is None:  # 念のため本文の JSON も見る
-            try:
-                data = json.loads(payload.get("result") or "")
-            except json.JSONDecodeError:
-                data = None
+        if data is None:  # 念のため本文の JSON も見る（前置きの文や ```json の囲みがあっても読む）
+            data = extract_json_object(payload.get("result") or "")
         if not isinstance(data, dict):
             raise _FormatProblem("JSON オブジェクトが返されませんでした。")
         return data
@@ -187,6 +184,25 @@ class ClaudeCode:
             "画面で内容を入力するか、もう一度お試しください。",
             detail="\n".join(problems),
         )
+
+
+def extract_json_object(text: str) -> dict | None:
+    """文章の中から、最初に読める JSON オブジェクトを取り出す。
+
+    「{」が出てくる位置ごとに読んでみて、辞書として読めた最初のものを返す
+    （前置きの文に JSON ではない「{...}」が入っていても、次の「{」から読み直す）。
+    """
+    decoder = json.JSONDecoder()
+    start = text.find("{")
+    while start != -1:
+        try:
+            obj, _end = decoder.raw_decode(text, start)
+        except json.JSONDecodeError:
+            obj = None
+        if isinstance(obj, dict):
+            return obj
+        start = text.find("{", start + 1)
+    return None
 
 
 class _FormatProblem(Exception):

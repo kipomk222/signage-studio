@@ -29,3 +29,33 @@ def replace_file(src: Path | str, dst: Path | str) -> None:
         src.unlink()
     except OSError:
         pass
+
+
+def same_file(a: Path | str, b: Path | str) -> bool:
+    """同じファイルとみなせるか（大きさと更新日時。copy2 は更新日時も写すので、取り込んだ物とも一致する）。"""
+    try:
+        sa, sb = Path(a).stat(), Path(b).stat()
+    except OSError:
+        return False
+    return sa.st_size == sb.st_size and int(sa.st_mtime) == int(sb.st_mtime)
+
+
+def copy_in(src: Path | str, folder: Path | str) -> Path:
+    """取り込み: src を folder にコピーして、コピー先を返す（元のファイルは変えない）。
+
+    - 同じファイルが既にあれば、コピーせずにそれを返す
+    - 同じ名前で中身が違えば「名前_2」「名前_3」… と空いている名前にする
+    - 仮の名前（.part）に書いてから本当の名前にする（途中で止まっても、壊れたファイルが残らない）
+    """
+    src, folder = Path(src), Path(folder)
+    folder.mkdir(parents=True, exist_ok=True)
+    name, n = src.name, 2
+    while (folder / name).exists() and not same_file(folder / name, src):
+        name = f"{src.stem}_{n}{src.suffix}"
+        n += 1
+    dst = folder / name
+    if not dst.exists():
+        part = dst.with_name(dst.name + ".part")
+        shutil.copy2(src, part)
+        replace_file(part, dst)
+    return dst

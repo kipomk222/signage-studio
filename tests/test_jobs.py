@@ -63,8 +63,31 @@ def test_cancel_leaves_no_half_written_video(tmp_path):
             "-preset", "ultrafast", str(out)]
     threading.Timer(1.5, job.cancel).start()
     with job.active(), pytest.raises(Cancelled):
-        run(args, what="テスト")
+        run(args, what="テスト", output=out)
     assert not out.exists()
     with pytest.raises(PipelineError):
-        run(["ffmpeg", "-hide_banner", "-y", "-i", str(tmp_path / "ない.mp4"), str(out)], what="テスト")
+        run(["ffmpeg", "-hide_banner", "-y", "-i", str(tmp_path / "ない.mp4"), str(out)], what="テスト", output=out)
     assert not out.exists()
+
+
+def test_failed_command_never_deletes_material_or_inputs(tmp_path):
+    """失敗しても、消すのは output にはっきり渡したファイルだけ。素材・声・入力のファイルは消さない。"""
+    from app.pipeline.ffmpeg import PipelineError, run
+    bad = ["ffmpeg", "-hide_banner", "-y", "-f", "lavfi", "-i", "nosuchfilter", ]
+    for folder in ("素材", "声"):
+        keep = tmp_path / folder / "IMG_0001.MOV"
+        keep.parent.mkdir()
+        keep.write_text("元の素材")
+        with pytest.raises(PipelineError):
+            run([*bad, str(keep)], what="テスト", output=keep)
+        assert keep.exists()
+    src = tmp_path / "入力.mp4"
+    src.write_text("入力")
+    with pytest.raises(PipelineError):
+        run(["ffmpeg", "-hide_banner", "-y", "-i", str(src), str(src)], what="テスト", output=src)
+    assert src.exists()
+    last = tmp_path / "最後の引数.mp4"   # output を渡さなければ、最後の引数でも消さない
+    last.write_text("x")
+    with pytest.raises(PipelineError):
+        run([*bad, str(last)], what="テスト")
+    assert last.exists()

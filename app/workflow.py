@@ -12,7 +12,6 @@
 from __future__ import annotations
 
 import html
-import shutil
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
@@ -31,13 +30,13 @@ from app.pipeline.export import ExportResult, export_video
 from app.pipeline.ffmpeg import duration_of, ffmpeg_base, run
 from app.pipeline.fixterms import Fix, TermFixer, collect_terms, log_text
 from app.pipeline.inventory import ClipInfo, list_videos, probe_clip, scan_folder
-from app.pipeline.normalize import normalize_clip
+from app.pipeline.normalize import color_filter, norm_path, normalize_clip
 from app.pipeline.scenes import assign_scenes, order_by_scene
 from app.pipeline.silence import STRENGTH, TIGHTEST_MIN_SILENCE, CutResult
 from app.pipeline.telop_render import build_telop_ass, burn_ass
 from app.pipeline.transcribe import Transcriber, Word, hint_text, to_phrases, transcribe
 from app.platform import PlatformProfile, get_profile
-from app.fileops import replace_file
+from app.fileops import copy_in, replace_file
 from app.project import (
     Clip, EditDrop, EditInsert, EditPiece, EditPlan, Project, Stage, create_project, load_project, save_project,
 )
@@ -200,9 +199,7 @@ def import_material(folder: Path, source: Path | list[Path], services: Services,
         raise UserError("動画が見つかりませんでした。", "スマホで撮った動画ファイルが入ったフォルダを選んでください。")
     for i, f in enumerate(files, 1):
         _step(job, 0.4 * i / len(files), f"素材をコピーしています（{i}/{len(files)}）")
-        target = dst / f.name
-        if not target.exists():
-            shutil.copy2(f, target)
+        copy_in(f, dst)  # 同じ名前の別ファイルは「名前_2」で入れる
 
     _step(job, 0.45, "素材を調べています")
     infos = scan_folder(profile, dst)
@@ -213,7 +210,7 @@ def import_material(folder: Path, source: Path | list[Path], services: Services,
         _step(job, 0.45 + 0.55 * i / len(infos), f"見本の画像を作っています（{i}/{len(infos)}）")
         prev = old.get(c.path.name)
         clips.append(Clip(
-            file=c.path.name, duration=round(c.duration, 2), vertical=c.vertical, silent=c.silent,
+            file=c.path.name, duration=round(c.duration, 2), vertical=c.vertical, silent=c.silent, hdr=c.hdr,
             excluded=prev.excluded if prev else c.excluded,
             exclude_reason="、".join(c.exclude_reasons),
             scene_id=prev.scene_id if prev else None, scene_manual=prev.scene_manual if prev else False,
@@ -230,7 +227,8 @@ def _make_thumb(profile: PlatformProfile, clip: ClipInfo, dst: Path) -> None:
     at = min(1.0, max(0.0, clip.duration / 3))
     try:
         run([*ffmpeg_base(profile.ffmpeg), "-ss", f"{at:.2f}", "-i", str(clip.path), "-frames:v", "1",
-             "-vf", "scale=320:-2", str(dst)], what="見本の画像を作れませんでした。")
+             "-vf", color_filter(clip.color, profile.has_zscale) + "scale=320:-2", str(dst)],
+            what="見本の画像を作れませんでした。", output=dst)
     except UserError:
         pass  # 見本がなくても編集はできる
 
@@ -297,7 +295,7 @@ def prepare_analysis(folder: Path, services: Services, with_words: bool, tight: 
     for i, c in enumerate(use, 1):
         frac = lambda k: lo + (hi - lo) * ((i - 1) + k) / len(use)  # noqa: E731
         stem = Path(c.file).stem
-        norm = folder / "work" / "norm" / f"{stem}_{project.settings.fit}.mp4"
+        norm = norm_path(folder / "work", c.file, project.settings.fit)
         if not norm.exists() or norm.stat().st_mtime < (src / c.file).stat().st_mtime:
             _step(job, frac(0.0), f"形式をそろえています（{i}/{len(use)}）")
             part = norm.with_name(norm.stem + ".part.mp4")  # できあがってから名前を変える（途中で止めても壊れない）
@@ -507,13 +505,13 @@ def make_edit_thumbs(folder: Path, services: Services) -> None:
     items = [(x.clip, x.start) for x in project.edit.pieces + project.edit.inserts + project.edit.dropped]  # type: ignore[operator]
     for clip, t in items:
         dst = edit_thumb(folder, clip, t)
-        norm = folder / "work" / "norm" / f"{Path(clip).stem}_{project.settings.fit}.mp4"
+        norm = norm_path(folder / "work", clip, project.settings.fit)
         if dst.exists() or not norm.exists():
             continue
         dst.parent.mkdir(parents=True, exist_ok=True)
         try:
             run([*ffmpeg_base(profile.ffmpeg), "-ss", f"{t + 0.3:.2f}", "-i", str(norm), "-frames:v", "1",
-                 "-vf", "scale=240:-2", str(dst)], what="見本の画像を作れませんでした。")
+                 "-vf", "scale=240:-2", str(dst)], what="見本の画像を作れませんでした。", output=dst)
         except UserError:
             pass
 
@@ -585,7 +583,7 @@ def render_telop_video(profile: PlatformProfile, project: Project, folder: Path,
     if until:
         src = work / "preview_src.mp4"
         run([*ffmpeg_base(profile.ffmpeg), "-i", str(joined), "-t", f"{until:.2f}", "-c", "copy", str(src)],
-            what="プレビューを作れませんでした。")
+            what="プレビューを作れませんでした。", output=src)
     corner = None
     cl = project.settings.corner_logo
     if cl.show:

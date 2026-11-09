@@ -12,7 +12,7 @@ from nicegui import run, ui
 
 from app.errors import UserError
 from app.jobs import Cancelled, Job
-from app.project import STAGE_ORDER, Project, Stage
+from app.project import STAGE_ORDER, Project, Stage, save_project
 
 ROOT = Path(__file__).resolve().parents[2]
 LOG = ROOT / "logs" / "エラー記録.txt"
@@ -55,6 +55,10 @@ def header(project: Project | None = None, current: Stage | None = None,
            folder: Path | None = None, page: str = "") -> None:
     """上部の帯。動画の画面（folder あり）では「Claude に相談」の欄も付ける。"""
     holder: dict = {}
+    if project is not None and folder is not None and project.notice:  # 控えから戻したときなどに1回だけ知らせる
+        ui.notify(project.notice, type="warning", position="top", timeout=0, close_button="閉じる")
+        project.notice = ""
+        save_project(folder, project)
     with ui.header().classes("bg-white text-gray-900 shadow-sm"):
         with ui.row().classes("page items-center justify-between py-1"):
             with ui.row().classes("items-center gap-3 cursor-pointer").on("click", lambda: ui.navigate.to("/")):
@@ -112,8 +116,27 @@ UNEXPECTED = UserError("思わぬ問題が起きました。",
                        "もう一度お試しください。続くときは logs フォルダの「エラー記録.txt」を確認してください。")
 
 
+_busy = False  # 時間のかかる処理が動いている（使うのは1人なので、アプリ全体で一度に1つだけ）
+BUSY_MESSAGE = "いま別の処理をしています。終わるまでお待ちください。"
+
+
 async def run_job(title: str, fn: Callable, *args, **kwargs):
-    """時間のかかる処理を、進み具合と「中止」ボタンのあるダイアログで動かす。失敗したら None。"""
+    """時間のかかる処理を、進み具合と「中止」ボタンのあるダイアログで動かす。失敗したら None。
+
+    ボタンを素早く2回押しても、同じ処理が2つ動かないようにする（await より前に印を立てる）。
+    """
+    global _busy
+    if _busy:
+        ui.notify(BUSY_MESSAGE, type="warning", position="top-right")
+        return None
+    _busy = True
+    try:
+        return await _run_job(title, fn, *args, **kwargs)
+    finally:
+        _busy = False
+
+
+async def _run_job(title: str, fn: Callable, *args, **kwargs):
     job = Job()
     with ui.dialog().props("persistent") as dlg, ui.card().classes("w-[560px] gap-3"):
         ui.label(title).classes("text-lg font-bold")

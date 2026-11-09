@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from app.pipeline.ffmpeg import duration_of, ffmpeg_base, run
-from app.pipeline.normalize import AUDIO_ARGS
+from app.pipeline.normalize import audio_args_for, exact_length_filters, frame_count
 from app.platform import PlatformProfile
 
 Range = tuple[float, float]
@@ -97,16 +97,22 @@ def keep_ranges(silences: list[Range], duration: float, pad: float) -> list[Rang
 
 
 def render_ranges(profile: PlatformProfile, src: Path, dst: Path, ranges: list[Range]) -> None:
+    """残す範囲だけをつないだ動画を作る。長さはコマ数ぴったりにそろえる。"""
+    frames = frame_count(sum(e - s for s, e in ranges))
+    v_end, a_end = exact_length_filters(frames)
     parts, labels = [], []
     for i, (s, e) in enumerate(ranges):
         parts.append(f"[0:v]trim=start={s}:end={e},setpts=PTS-STARTPTS[v{i}]")
         parts.append(f"[0:a]atrim=start={s}:end={e},asetpts=PTS-STARTPTS[a{i}]")
         labels.append(f"[v{i}][a{i}]")
-    graph = ";".join(parts) + f";{''.join(labels)}concat=n={len(ranges)}:v=1:a=1[v][a]"
+    graph = (";".join(parts) + f";{''.join(labels)}concat=n={len(ranges)}:v=1:a=1[cv][ca];"
+             f"[cv]{v_end}[v];[ca]{a_end}[a]")
     run(
         [*ffmpeg_base(profile.ffmpeg), "-i", str(src), "-filter_complex", graph,
-         "-map", "[v]", "-map", "[a]", *profile.video_args("work"), *AUDIO_ARGS, str(dst)],
+         "-map", "[v]", "-map", "[a]", "-frames:v", str(frames), *profile.video_args("work"),
+         *audio_args_for(dst), str(dst)],
         what=f"「{src.name}」の無音部分を詰められませんでした。",
+        output=dst,
     )
 
 

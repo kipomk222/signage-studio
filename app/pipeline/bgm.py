@@ -49,5 +49,6 @@ def mix_bgm(profile: PlatformProfile, video: Path, bgm: Path | None, dst: Path, 
          "-map", "0:v", "-map", "[a]", "-c:v", "copy", *AUDIO_ARGS, "-t", f"{duration:.3f}", str(dst)],
         what="BGM を重ねられませんでした。",
         how="BGM のファイルが再生できるか確認してください。",
+        output=dst,
     )
     return dst

@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import tempfile
 from datetime import date, datetime
 from enum import Enum
@@ -114,6 +115,7 @@ class Clip(BaseModel):
     duration: float = 0
     vertical: bool = False
     silent: bool = False  # 話し声なし（差し込み用の映像）
+    hdr: bool = False     # HDR の映像（普通の映像の色に直して使う）
     transcript: str = ""
     cut_ranges: list[tuple[float, float]] = Field(default_factory=list)
     kept_seconds: float = 0
@@ -275,6 +277,7 @@ class Project(BaseModel):
     telops: list[Telop] = Field(default_factory=list)
     settings: Settings = Field(default_factory=Settings)
     history: list[HistoryEntry] = Field(default_factory=list)
+    notice: str = ""  # 次に画面を開いたときに1回だけ知らせること（控えから戻したときなど）
 
     @model_validator(mode="before")
     @classmethod
@@ -398,6 +401,7 @@ def save_project(folder: Path, project: Project, now: datetime | None = None) ->
             f.write(data)
             f.flush()
             os.fsync(f.fileno())
+        _keep_backup(folder)
         replace_file(tmp_name, folder / PROJECT_FILE)
     except BaseException as exc:
         try:
@@ -412,20 +416,50 @@ def save_project(folder: Path, project: Project, now: datetime | None = None) ->
         raise
 
 
+BACKUP_FILE = "project.json.bak"   # 1つ前に保存した内容（壊れたときに戻す）
+BROKEN_FILE = "project.broken.json"
+RESTORED_NOTICE = "保存の途中で問題があったため、1つ前の保存内容に戻しました。直前の変更が戻っているかもしれません。"
+
+
+def _keep_backup(folder: Path) -> None:
+    """置き換える前の project.json を控えに写す（写せなくても保存は続ける）。"""
+    current = folder / PROJECT_FILE
+    if not current.exists():
+        return
+    try:
+        shutil.copyfile(current, folder / BACKUP_FILE)
+    except OSError:
+        pass
+
+
+def _read(path: Path) -> Project:
+    return Project.model_validate_json(path.read_text(encoding="utf-8"))
+
+
 def load_project(folder: Path) -> Project:
-    path = Path(folder) / PROJECT_FILE
+    folder = Path(folder)
+    path = folder / PROJECT_FILE
     if not path.exists():
         raise ProjectError(
             "このフォルダには作業内容が見つかりません。",
             "ホーム画面の一覧から選び直してください。",
         )
     try:
-        return Project.model_validate_json(path.read_text(encoding="utf-8"))
-    except (ValidationError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+        return _read(path)
+    except (ValidationError, json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
+        problem = exc
+    backup = folder / BACKUP_FILE  # 壊れていたら、1つ前の保存内容に戻す
+    try:
+        project = _read(backup)
+    except (ValidationError, json.JSONDecodeError, UnicodeDecodeError, OSError):
         raise ProjectError(
             "作業内容のファイルが読み込めませんでした。",
             "新しく企画し直すか、ファイルを元に戻してください。",
-        ) from exc
+        ) from problem
+    replace_file(path, folder / BROKEN_FILE)  # 壊れたファイルは消さずに残す
+    project.notice = RESTORED_NOTICE
+    save_project(folder, project, now=project.updated_at)
+    return project
 
 
 def list_projects(projects_root: Path) -> list[ProjectSummary]:

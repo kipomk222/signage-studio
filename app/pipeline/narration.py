@@ -50,7 +50,7 @@ def prepare_voice(profile: PlatformProfile, src: Path, dst: Path, info: VoiceInf
          "-af", f"atrim=start={info.trim_start}:end={info.trim_end},asetpts=PTS-STARTPTS,"
                 f"loudnorm=I={VOICE_LUFS}:TP=-2:LRA=11,aresample=48000",
          "-ac", "2", "-c:a", "pcm_s16le", str(part)],
-        what=f"声のファイル「{src.name}」を読み込めませんでした。")
+        what=f"声のファイル「{src.name}」を読み込めませんでした。", output=part)
     replace_file(part, dst)
     return dst
 

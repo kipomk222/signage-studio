@@ -479,6 +479,11 @@ async def material_page(pid: str) -> None:
                 scenes = {"": "自動"} | {s.id: f"{i}. {s.title}" for i, s in enumerate(project.plan.scenes, 1)}
                 used = sum(1 for c in project.clips if not c.excluded)
                 ui.label(f"{len(project.clips)}本中 {used}本を使います").classes("font-bold")
+                if any(c.hdr for c in project.clips) and not CONFIG.services.prof().has_zscale:
+                    from app.pipeline.normalize import HDR_NO_ZSCALE_NOTE
+                    with ui.row().classes("w-full items-center gap-2 p-3 rounded bg-orange-50"):
+                        ui.icon("warning", color="orange")
+                        ui.label(HDR_NO_ZSCALE_NOTE).classes("grow")
                 with ui.grid(columns=3).classes("w-full gap-4"):
                     for c in project.clips:
                         with ui.card().classes("gap-2" + (" opacity-50" if c.excluded else "")).props("flat bordered"):
@@ -492,6 +497,8 @@ async def material_page(pid: str) -> None:
                                     ui.badge("縦撮り").props("outline color=orange")
                                 if c.silent:
                                     ui.badge("話し声なし（差し込み用）").props("outline color=teal")
+                                if c.hdr:
+                                    ui.badge("HDR（色を直して使います）").props("outline color=purple")
                                 if c.kept_seconds:
                                     ui.label(f"→ {c.kept_seconds:.1f}秒").classes("hint")
                             if c.exclude_reason:

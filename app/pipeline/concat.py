@@ -5,7 +5,7 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
-from app.pipeline.ffmpeg import duration_of, ffmpeg_base, run
+from app.pipeline.ffmpeg import ffmpeg_base, run, video_duration
 from app.pipeline.normalize import AUDIO_ARGS
 from app.platform import PlatformProfile
 
@@ -39,15 +39,20 @@ def concat_clips(profile: PlatformProfile, clips: list[Path], dst: Path, fade: f
         raise ValueError("no clips")
     dst.parent.mkdir(parents=True, exist_ok=True)
     if len(clips) == 1:
-        shutil.copy2(clips[0], dst)
-        return duration_of(profile.ffprobe, dst)
+        if clips[0].suffix.lower() == dst.suffix.lower():
+            shutil.copy2(clips[0], dst)
+        else:  # 途中のピース（.mov）1本だけ: 形式をそろえる
+            run([*ffmpeg_base(profile.ffmpeg), "-i", str(clips[0]), "-c:v", "copy", *AUDIO_ARGS, str(dst)],
+                what="クリップをつなげられませんでした。", output=dst)
+        return video_duration(profile.ffprobe, dst)
 
-    durations = [duration_of(profile.ffprobe, c) for c in clips]
+    # 声・テロップの時刻と同じ測り方（映像の長さ）で、つなぐ位置を決める
+    durations = [video_duration(profile.ffprobe, c) for c in clips]
     graph, v, a = build_graph(durations, fade)
     args = [*ffmpeg_base(profile.ffmpeg)]
     for c in clips:
         args += ["-i", str(c)]
     args += ["-filter_complex", graph, "-map", v, "-map", a,
              *profile.video_args("work"), *AUDIO_ARGS, str(dst)]
-    run(args, what="クリップをつなげられませんでした。")
-    return duration_of(profile.ffprobe, dst)
+    run(args, what="クリップをつなげられませんでした。", output=dst)
+    return video_duration(profile.ffprobe, dst)

@@ -29,6 +29,11 @@ class ClipInfo:
     size_bytes: int
     exclude_reasons: list[str] = field(default_factory=list)
     silent: bool = False  # 話し声がない（実演・手元アップなど、差し込みに使う映像）
+    color: str = "sdr"    # "hdr": HDR の映像（iPhone の HDR ビデオなど）／"wide": 色の範囲だけ広い／"sdr": 普通
+
+    @property
+    def hdr(self) -> bool:
+        return self.color == "hdr"
 
     @property
     def vertical(self) -> bool:
@@ -60,6 +65,18 @@ def _rotation(stream: dict) -> int:
         if "rotation" in side:
             return int(float(side["rotation"])) % 360
     return 0
+
+
+HDR_TRANSFERS = {"arib-std-b67", "smpte2084"}   # HLG（iPhone・Dolby Vision 8.4 も）／PQ
+
+
+def color_kind(stream: dict) -> str:
+    """映像の色の種類。明るさの方式（転送特性）が HDR なら "hdr"、色の範囲だけ広いなら "wide"。"""
+    if stream.get("color_transfer") in HDR_TRANSFERS:
+        return "hdr"
+    if stream.get("color_primaries") == "bt2020":
+        return "wide"
+    return "sdr"
 
 
 def _fps(stream: dict) -> float:
@@ -99,6 +116,7 @@ def probe_clip(profile: PlatformProfile, path: Path) -> ClipInfo:
         has_audio=has_audio,
         mean_db=mean_volume(profile, path) if has_audio else None,
         size_bytes=Path(path).stat().st_size,
+        color=color_kind(video),
     )
 
 

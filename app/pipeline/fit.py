@@ -15,6 +15,7 @@ from app.pipeline.concat import FADE
 
 LEAD, TAIL = 0.3, 0.5
 MIN_CUT = 1.5
+MIN_KEEP = 2 * FADE + 0.2   # これより短いカットは、つなぎ目のクロスフェードに収まらない
 MAX_SPEED = 1.25
 EPS = 0.02
 
@@ -28,6 +29,7 @@ class Cut:
     speed: float = 1.0
     hold: float = 0.0
     spare: bool = False     # 予備のカットから足したもの
+    ref: int = -1           # 呼び出し側のカットの番号（外したカットがあっても対応が崩れないように）
 
     @property
     def length(self) -> float:
@@ -53,6 +55,7 @@ def target_length(voice_seconds: float) -> float:
 def fit_scene(cuts: list[Cut], target: float, spares: list[Cut] | None = None, fade: float = FADE) -> FitResult:
     if not cuts:
         raise ValueError("no cuts")
+    originals = [replace(c) for c in cuts]
     cuts = [replace(c, speed=1.0, hold=0.0) for c in cuts]
     spares = [replace(s, spare=True) for s in (spares or [])]
     notes: list[str] = []
@@ -92,8 +95,31 @@ def fit_scene(cuts: list[Cut], target: float, spares: list[Cut] | None = None, f
                 delta = _shrink_even(cuts, delta)
         if delta < -EPS:
             last = cuts[-1]
-            last.end = round(max(last.start + 0.5, last.end + delta), 3)
+            last.end = round(max(min(last.end, last.start + MIN_KEEP), last.end + delta), 3)  # 詰めるだけ（伸ばさない）
+    cuts = _protect_short(cuts, originals, notes)
     return FitResult(cuts, round(target, 3), round(scene_length(cuts, fade), 3), notes)
+
+
+def _protect_short(cuts: list[Cut], originals: list[Cut], notes: list[str]) -> list[Cut]:
+    """短すぎるカットを MIN_KEEP まで広げる（素材の長さは超えない。後ろが足りなければ前へ）。広げられなければ外す。"""
+    out = []
+    for c in cuts:
+        need = MIN_KEEP - c.hold
+        if (c.end - c.start) * c.speed >= need - 1e-6:
+            out.append(c)
+            continue
+        raw = need / c.speed
+        c.end = round(min(c.src_len, c.start + raw), 3)
+        c.start = round(max(0.0, min(c.start, c.end - raw)), 3)
+        if (c.end - c.start) * c.speed + c.hold >= MIN_KEEP - 1e-3:
+            out.append(c)
+        else:
+            notes.append("素材が短すぎるカットを外しました。")
+    if not out:  # 全部外れたときは、元のカットを1つ残す（場面が消えないように）
+        keep = max(originals, key=lambda c: c.end - c.start)
+        out = [replace(keep, speed=1.0, hold=0.0)]
+        notes.append("声の長さに合わせきれませんでした。場面の長さを確かめてください。")
+    return out
 
 
 def _extend_handles(cuts: list[Cut], delta: float) -> float:

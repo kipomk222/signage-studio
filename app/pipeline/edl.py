@@ -14,8 +14,8 @@ from pathlib import Path
 
 from app.jobs import checkpoint
 from app.pipeline.concat import FADE, concat_clips
-from app.pipeline.ffmpeg import ffmpeg_base, run
-from app.pipeline.normalize import AUDIO_ARGS
+from app.pipeline.ffmpeg import ffmpeg_base, run, video_duration
+from app.pipeline.normalize import AUDIO_ARGS, SAMPLE_RATE, audio_args_for, exact_length_filters, frame_count
 from app.pipeline.silence import MIN_PIECE, Range, render_ranges
 from app.platform import PlatformProfile
 from app.project import EditPiece, EditPlan
@@ -60,16 +60,21 @@ def cut_length(p: EditPiece) -> float:
 
 
 def render_cut(profile: PlatformProfile, src: Path, dst: Path, p: EditPiece) -> None:
-    """話していない映像のカット: 元の音は消し、必要ならゆっくり再生・最後の絵を止めて伸ばす。"""
-    length = cut_length(p)
+    """話していない映像のカット: 元の音は消し、必要ならゆっくり再生・最後の絵を止めて伸ばす。
+
+    長さはコマ数ぴったりにそろえる（ゆっくり再生・止めた絵を足した後の長さで数える）。
+    """
+    frames = frame_count(cut_length(p))
+    v_end, a_end = exact_length_filters(frames)
     v = f"[0:v]trim=start={p.start}:end={p.end},setpts=(PTS-STARTPTS)*{p.speed:.4f}"
     if p.hold > 0:
         v += f",tpad=stop_mode=clone:stop_duration={p.hold:.3f}"
-    v += ",fps=30[v]"
-    a = f"anullsrc=r=48000:cl=stereo,atrim=0:{length:.3f}[a]"
+    v += f",{v_end}[v]"
+    a = f"anullsrc=r={SAMPLE_RATE}:cl=stereo,{a_end}[a]"
     run([*ffmpeg_base(profile.ffmpeg), "-i", str(src), "-filter_complex", f"{v};{a}",
-         "-map", "[v]", "-map", "[a]", "-t", f"{length:.3f}", *profile.video_args("work"), *AUDIO_ARGS, str(dst)],
-        what=f"「{src.name}」のカットを切り出せませんでした。")
+         "-map", "[v]", "-map", "[a]", "-frames:v", str(frames), *profile.video_args("work"),
+         *audio_args_for(dst), str(dst)],
+        what=f"「{src.name}」のカットを切り出せませんでした。", output=dst)
 
 
 def map_time(layouts: list[PieceLayout], clip: str, t: float) -> float | None:
@@ -86,7 +91,7 @@ def render_plan(profile: PlatformProfile, plan: EditPlan, norm: dict[str, Path],
     """設計図の部分をつなぐ。戻り値: (つないだ動画, 時刻の対応, 長さ)。"""
     pieces_dir = work / "pieces"
     pieces_dir.mkdir(parents=True, exist_ok=True)
-    for old in pieces_dir.glob("*.mp4"):
+    for old in [*pieces_dir.glob("*.mp4"), *pieces_dir.glob("*.mov")]:
         old.unlink()
     files, layouts, cursor = [], [], 0.0
     used = [(i, p) for i, p in enumerate(plan.pieces) if p.enabled]
@@ -94,7 +99,7 @@ def render_plan(profile: PlatformProfile, plan: EditPlan, norm: dict[str, Path],
         checkpoint()
         if progress:
             progress(k / max(1, len(used)), f"部分を切り出しています（{k + 1}/{len(used)}）")
-        dst = pieces_dir / f"{len(files):03d}.mp4"
+        dst = pieces_dir / f"{len(files):03d}.mov"  # 途中のピースは音を区切りのない形式で持つ
         if p.mute:  # 話していない映像: 範囲そのまま（無音カットしない）・音は消す
             ranges = [(p.start, p.end)]
             length = cut_length(p)
@@ -111,7 +116,7 @@ def render_plan(profile: PlatformProfile, plan: EditPlan, norm: dict[str, Path],
                                    speed=p.speed if p.mute else 1.0, hold=p.hold if p.mute else 0.0,
                                    scene_id=p.scene_id))
         files.append(dst)
-        cursor += length - FADE
+        cursor += video_duration(profile.ffprobe, dst) - FADE  # 計算ではなく、できあがった長さで積み上げる
     if not files:
         raise ValueError("no usable pieces")
     joined = work / "joined_base.mp4"
@@ -169,7 +174,7 @@ def apply_inserts(profile: PlatformProfile, base: Path, placed: list[PlacedInser
         prev = out
     run([*args, "-filter_complex", ";".join(graph), "-map", prev, "-map", "0:a",
          *profile.video_args("work"), *AUDIO_ARGS, str(dst)],
-        what="差し込みの映像を重ねられませんでした。")
+        what="差し込みの映像を重ねられませんでした。", output=dst)
     return dst
 
 

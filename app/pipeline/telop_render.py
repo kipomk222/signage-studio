@@ -13,7 +13,7 @@ from app.pipeline.colors import to_ass, to_ass_tag
 from app.pipeline.ffmpeg import ffmpeg_base, run
 from app.pipeline.fonts import FONTS, FONTS_DIR, ass_size, choose_font, font_size, plain_text
 from app.pipeline.normalize import HEIGHT, WIDTH
-from app.platform import PlatformProfile, ffmpeg_filter_path
+from app.platform import PlatformProfile, ffmpeg_rel_path
 from app.project import Telop, TelopStyle
 
 OUTLINE = 6
@@ -121,7 +121,10 @@ def build_telop_ass(telops: list[Telop], path: Path, category: str = "", model_n
 
 def burn_ass(profile: PlatformProfile, src: Path, ass: Path, dst: Path, corner: Path | None = None) -> Path:
     """テロップを焼き込む。corner（画像）があれば、同じ処理の中で左上にロゴを重ねる。"""
-    vf = f"ass={ffmpeg_filter_path(ass)}:fontsdir={ffmpeg_filter_path(FONTS_DIR)}"
+    src, dst = Path(src).resolve(), Path(dst).resolve()  # FFmpeg を別の場所で動かすので、動画は絶対の場所で渡す
+    corner = Path(corner).resolve() if corner is not None else None
+    cwd = ass.parent  # FFmpeg をテロップのファイルの場所で動かし、近い場所で渡す（記号のエスケープが要らない）
+    vf = f"ass={ffmpeg_rel_path(ass, cwd)}:fontsdir={ffmpeg_rel_path(FONTS_DIR, cwd)}"
     if corner is not None:
         from app.pipeline.cards import corner_overlay
         video = ["-i", str(corner), "-filter_complex", f"[0:v]{vf}[t];" + corner_overlay("[t]", 1),
@@ -131,5 +134,5 @@ def burn_ass(profile: PlatformProfile, src: Path, ass: Path, dst: Path, corner: 
     run([*ffmpeg_base(profile.ffmpeg), "-i", str(src), *video,
          *profile.video_args("work"), "-c:a", "copy", str(dst)],
         what="テロップを動画に入れられませんでした。",
-        how="テロップに特殊な記号が入っていないか確認して、もう一度お試しください。")
+        how="テロップに特殊な記号が入っていないか確認して、もう一度お試しください。", output=dst, cwd=cwd)
     return dst

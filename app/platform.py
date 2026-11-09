@@ -6,6 +6,7 @@ OS による違いはこのファイルにだけ書く（CLAUDE.md の作業ル�
 
 from __future__ import annotations
 
+import os
 import platform as _platform
 import shutil
 import subprocess
@@ -103,6 +104,16 @@ def parse_encoder_list(text: str) -> set[str]:
     return names
 
 
+def list_filters(ffmpeg: str) -> set[str]:
+    """FFmpeg が使えるフィルターの名前の一覧（調べられなければ空）。"""
+    try:
+        out = subprocess.run([ffmpeg, "-hide_banner", "-filters"], capture_output=True, text=True,
+                             encoding="utf-8", errors="replace", timeout=30, check=False).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return set()
+    return {parts[1] for line in out.splitlines() if len(parts := line.split()) >= 2 and len(parts[0]) == 3}
+
+
 def encoder_works(ffmpeg: str, name: str) -> bool:
     """一覧に載っていても実際には動かない（ドライバ不足など）ことがあるので、1コマだけ試す。"""
     try:
@@ -166,6 +177,22 @@ def ffmpeg_filter_path(path: Path) -> str:
     return f"'{text}'"
 
 
+def ffmpeg_rel_path(path: Path, cwd: Path) -> str:
+    """FFmpeg を cwd で動かすときの、フィルターに渡すファイルの場所（cwd から見た場所・/ 区切り）。
+
+    「C:」の「:」や「\\」、フォルダ名の記号をエスケープしなくて済む。出せないとき（別のドライブなど）は
+    ffmpeg_filter_path の書き方にする。
+    """
+    try:
+        rel = os.path.relpath(Path(path).resolve(), Path(cwd).resolve())
+    except ValueError:
+        return ffmpeg_filter_path(path)
+    rel = rel.replace("\\", "/")  # Windows の区切り「\\」はフィルターの中でエスケープ扱いになる
+    if any(ch in rel for ch in "':,;[]=\\"):  # 名前に記号が入っているときは、エスケープする書き方で
+        return ffmpeg_filter_path(path)
+    return rel
+
+
 def claude_command(os_kind: OSKind | None = None, which: Callable[[str], str | None] = shutil.which,
                    home: Path | None = None) -> list[str] | None:
     """Claude Code を呼び出すコマンドの頭の部分（見つからなければ None）。
@@ -211,6 +238,7 @@ class PlatformProfile:
     ffmpeg: str
     ffprobe: str
     video_encoder: str
+    has_zscale: bool = True  # HDR の映像を普通の色に直す機能（zscale）があるか
 
     def video_args(self, purpose: str = "final") -> list[str]:
         return video_encode_args(self.video_encoder, purpose)
@@ -226,6 +254,7 @@ def build_profile(
     which: Callable[[str], str | None] = shutil.which,
     encoders: Callable[[str], set[str]] = list_encoders,
     works: Callable[[str, str], bool] = encoder_works,
+    filters: Callable[[str], set[str]] = list_filters,
 ) -> PlatformProfile:
     ffmpeg, ffprobe = find_ffmpeg(os_kind, which)
     encoder = pick_encoder(os_kind, encoders(ffmpeg), lambda n: works(ffmpeg, n))
@@ -236,6 +265,7 @@ def build_profile(
         ffmpeg=ffmpeg,
         ffprobe=ffprobe,
         video_encoder=encoder,
+        has_zscale="zscale" in filters(ffmpeg),
     )
 
 

@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
@@ -38,6 +39,18 @@ DOWNLOAD_FAILED = ("文字起こし用のデータをダウンロードできま
                    "インターネットにつながっているか確認して、もう一度お試しください（初回のみ数分かかります）。")
 
 
+# Mac・Windows で同じように、話していない所に言葉が出る（聞き間違いで文が作られる）のを抑える
+NO_SPEECH_PROB = 0.6       # これより「話していない」らしい区間は捨てる
+SILENCE_THRESHOLD = 1.0    # 1秒以上の無音のあとの怪しい区間は読み直す（hallucination_silence_threshold）
+
+
+def _no_speech(prob) -> bool:
+    try:
+        return float(prob or 0.0) > NO_SPEECH_PROB
+    except (TypeError, ValueError):
+        return False
+
+
 _MODELS: dict[str, object] = {}  # 読み込んだ文字起こしのモデル（クリップごとに読み直さない）
 
 
@@ -57,8 +70,10 @@ def _faster_whisper(model_name: str) -> Transcriber:
         segments, _info = model.transcribe(
             str(path), language="ja", word_timestamps=True, vad_filter=True,
             initial_prompt=hint or None, condition_on_previous_text=False,
+            hallucination_silence_threshold=SILENCE_THRESHOLD,
         )
-        return [Word(float(w.start), float(w.end), w.word) for s in segments for w in (s.words or [])]
+        return [Word(float(w.start), float(w.end), w.word) for s in segments
+                if not _no_speech(getattr(s, "no_speech_prob", 0.0)) for w in (s.words or [])]
 
     return run
 
@@ -69,15 +84,19 @@ def _mlx_whisper(model_name: str) -> Transcriber:
             import mlx_whisper
         except ImportError as exc:
             raise UserError(*MODEL_MISSING) from exc
+        extra = {}
+        if "hallucination_silence_threshold" in inspect.signature(mlx_whisper.transcribe).parameters:
+            extra["hallucination_silence_threshold"] = SILENCE_THRESHOLD  # 古い版では渡さない
         try:
             result = mlx_whisper.transcribe(
                 str(path), path_or_hf_repo=model_name, language="ja", word_timestamps=True,
-                initial_prompt=hint or None, condition_on_previous_text=False,
+                initial_prompt=hint or None, condition_on_previous_text=False, **extra,
             )
         except (OSError, ConnectionError) as exc:
             raise UserError(*DOWNLOAD_FAILED) from exc
         return [Word(float(w["start"]), float(w["end"]), w["word"])
-                for s in result.get("segments", []) for w in s.get("words", [])]
+                for s in result.get("segments", []) if not _no_speech(s.get("no_speech_prob", 0.0))
+                for w in s.get("words", [])]
 
     return run
 

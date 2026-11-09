@@ -54,7 +54,7 @@ def telop_sheets(profile, video: Path, telops, dst_dir: Path) -> list[Path]:
                 for j, at in enumerate(frame_times(t.start, t.end, duration)):
                     frame = Path(tmp) / f"{i}_{j}.jpg"
                     run([*ffmpeg_base(profile.ffmpeg), "-ss", f"{at}", "-i", str(video), "-frames:v", "1",
-                         "-vf", f"scale={TILE_W}:{TILE_H}", str(frame)], what="テロップの見本を作れませんでした。")
+                         "-vf", f"scale={TILE_W}:{TILE_H}", str(frame)], what="テロップの見本を作れませんでした。", output=frame)
                     if frame.exists():
                         sheet.paste(Image.open(frame).convert("RGB"), (j * TILE_W, y + LABEL_H))
         dst = dst_dir / f"telops_{k // PER_SHEET + 1}.jpg"
